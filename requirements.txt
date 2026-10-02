@@ -1,8 +1,13 @@
-pandas>=2.0
-pyarrow>=14.0        # parquet engine
-requests>=2.31
-python-dateutil>=2.8
-tqdm>=4.66           # progress bars for large fetches
-jupyter>=1.0         # notebooks
-matplotlib>=3.7
-scipy>=1.11          # normal distribution, KS test
+# Exact versions, tested on Windows 10 / Python 3.13.5 (2026-10-02).
+# Phase 2 results reproduce under these (pandas 3.x) to ~1e-15.
+pandas==3.0.6
+numpy==2.5.3
+pyarrow==25.0.1          # parquet engine
+requests==2.34.2
+python-dateutil==2.9.0.post0
+tzdata==2026.4           # IANA time zones (America/New_York) on Windows
+tqdm==4.70.1             # progress bars for large fetches
+jupyter==1.1.1           # notebooks
+nbconvert==7.17.1        # run notebooks headless
+matplotlib==3.11.2
+scipy==1.18.1            # distributions, SVI optimiser, KS test

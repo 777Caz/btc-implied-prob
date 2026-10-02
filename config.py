@@ -4,6 +4,7 @@ Import this everywhere instead of hardcoding values.
 """
 from pathlib import Path
 import logging
+import time
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
@@ -69,7 +70,8 @@ def setup_logging(name: str = "btc_proj") -> logging.Logger:
 def _add_handlers(logger: logging.Logger) -> None:
     logger.setLevel(LOG_LEVEL)
 
-    fmt = logging.Formatter(LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter(LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%SZ")
+    fmt.converter = time.gmtime   # log timestamps in UTC like the data, not the machine's local time
 
     # console
     ch = logging.StreamHandler()
