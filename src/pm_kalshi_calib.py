@@ -9,6 +9,9 @@ Quotes. At each lead time before settlement (24h, 8h, 1h), the forward-filled YE
 the minute close_time - lead (the last state of the book at that moment). Only two-sided quotes
 (an empty side is NaN in the filled data). mid = (bid + ask)/2. 12:00 NY events open only 1 hour
 before settlement, so 24h/8h quotes exist only for 17:00 events.
+Also quoted at 08:00 UTC on the settlement day (13-14h before a 17:00 NY settlement), the time of
+Deribit's daily expiry and of our option surfaces, so these quotes line up with options later.
+12:00 NY events can't be compared with 08:00 surfaces: they open only at 11:00 NY (15:00/16:00 UTC).
 
 Effective N. Every strike in an event settles on the same BRTI print, and a 12:00 and a 17:00
 event on the same day share most of the BTC path. So the number of independent outcomes is
@@ -56,6 +59,8 @@ FILLED = config.DATA_PROCESSED / "pm_history" / "kalshi_1m" / "KXBTCD"
 NY = "America/New_York"
 
 LEADS = {"24h": pd.Timedelta("24h"), "8h": pd.Timedelta("8h"), "1h": pd.Timedelta("1h")}
+AT_0800 = "08:00 UTC"                         # fixed clock time, aligned with Deribit's 08:00 surfaces
+QUOTE_TIMES = [*LEADS, AT_0800]
 HOLDOUT_START = pd.Timestamp("2026-01-01", tz="UTC")
 BINS = np.array([0, .05, .10, .20, .30, .40, .50, .60, .70, .80, .90, .95, 1.0])
 ORDER_SIZES = (100, 10)
@@ -79,9 +84,10 @@ def quotes_at_leads() -> pd.DataFrame:
         q = q.set_index(["ticker", "t"]).sort_index()
         for tk in q.index.get_level_values(0).unique():
             m, qt = cat.loc[tk], q.loc[tk]
-            for name, lead in LEADS.items():
-                t = (m["close_time"] - lead).floor("min")
-                if t < m["open_time"].ceil("min") or t not in qt.index:
+            times = {name: (m["close_time"] - lead).floor("min") for name, lead in LEADS.items()}
+            times[AT_0800] = m["close_time"].normalize() + pd.Timedelta(hours=8)    # same UTC day as settlement
+            for name, t in times.items():
+                if t < m["open_time"].ceil("min") or t >= m["close_time"] or t not in qt.index:
                     continue
                 r = qt.loc[t]
                 rows.append({"ticker": tk, "event": m["event"], "settle": m["settle"], "lead": name,
@@ -245,7 +251,7 @@ def capacity_from_snapshots() -> pd.DataFrame:
 
 def chart_reliability(rel: pd.DataFrame):
     rel = rel[rel["period"].isin(["pre-2026", "2026"])]
-    leads = [l for l in LEADS if l in set(rel["lead"])]
+    leads = [l for l in QUOTE_TIMES if l in set(rel["lead"])]
     hours = sorted(rel["event_hour"].unique())
     fig, axes = plt.subplots(len(hours), len(leads), figsize=(3.4 * len(leads), 3.4 * len(hours)),
                              squeeze=False, sharex=True, sharey=True)
