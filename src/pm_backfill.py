@@ -56,15 +56,15 @@ NY = "America/New_York"
 KALSHI_SERIES = ["KXBTCD", "KXBTC"]
 KALSHI_HOURS_NY = (12, 17)                     # daily-type events only; other hourly events are out of scope
 KALSHI_RATE = 9.0                              # requests/s across all threads; Kalshi answers 429 above ~15/s
-KALSHI_THREADS = 10                            # requests in flight: archived calls take ~1 s, so the rate limit binds
+KALSHI_THREADS = 6                             # requests in flight (archived calls take ~1 s)
 KALSHI_CHUNK = pd.Timedelta(days=3)            # candle request window (well under any per-call cap)
 POLY_SERIES = {"45": "Bitcoin above", "10041": "Bitcoin price on"}
 POLY_PAUSE = 0.1
 
 
 class RateLimiter:
-    """Shared across threads. Adaptive (AIMD): on HTTP 429 the gap between calls grows 1.5x (down
-    to MIN_RATE); after each success it shrinks 1% (up to `rate`). Kalshi's /historical endpoints
+    """Shared across threads. Adaptive (AIMD): on HTTP 429 the gap between calls grows 1.25x (down
+    to MIN_RATE); after each success it shrinks 2% (up to `rate`). Kalshi's /historical endpoints
     throttle harder than the live ones, so the sustainable rate is found at run time."""
     MIN_RATE = 1.0
 
@@ -81,11 +81,11 @@ class RateLimiter:
 
     def throttled(self):
         with self.lock:
-            self.gap = min(self.gap * 1.5, 1.0 / self.MIN_RATE)
+            self.gap = min(self.gap * 1.25, 1.0 / self.MIN_RATE)
 
     def ok(self):
         with self.lock:
-            self.gap = max(self.gap * 0.99, self.min_gap)
+            self.gap = max(self.gap * 0.98, self.min_gap)
 
     @property
     def rate(self):
@@ -304,7 +304,9 @@ def polymarket_market_rows(e: dict) -> list[dict]:
     kind = "above" if e["title"].startswith("Bitcoin above") else "range"
     rows = []
     for m in e.get("markets") or []:
-        if not m.get("clobTokenIds"):
+        end = m.get("endDate") or e.get("endDate")               # a few markets lack their own endDate
+        if not m.get("clobTokenIds") or not end:
+            log.warning("Polymarket %s: market %s has no token or end date; skipped", e["slug"], m.get("id"))
             continue
         label = m.get("groupItemTitle") or m.get("question", "")
         try:
@@ -318,8 +320,8 @@ def polymarket_market_rows(e: dict) -> list[dict]:
             "condition_id": m.get("conditionId"), "yes_token": json.loads(m["clobTokenIds"])[0],
             "question": m.get("question"), "kind": kind, "strike": strike, "range_low": lo, "range_high": hi,
             "start": pd.Timestamp(m.get("startDate") or e.get("startDate")),
-            "end_date_gamma": pd.Timestamp(m["endDate"]),
-            "resolution_time": polymarket_resolution_time(e["title"], m.get("description", ""), m["endDate"]),
+            "end_date_gamma": pd.Timestamp(end),
+            "resolution_time": polymarket_resolution_time(e["title"], m.get("description", ""), end),
             "outcome": float(round(float(prices[0]))) if resolved else np.nan,
             "uma_status": m.get("umaResolutionStatus"), "volume": float(m.get("volumeNum") or 0)})
     return rows
