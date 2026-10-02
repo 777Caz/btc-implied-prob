@@ -23,6 +23,14 @@ Polymarket  Gamma /events?tag_slug=bitcoin finds the markets. The CLOB POST /boo
          in `groupItemThreshold` (that's a display-order number). `clobTokenIds` is a JSON string.
          Book levels are sorted worst-to-best, so best bid = max(bids), best ask = min(asks).
          Resolves on the Binance BTC/USDT 1-minute close at 12:00 ET.
+         resolution_time comes from the RULES (time in ET from the description, or "5PM ET" in
+         hourly titles, on the date in the title), not from Gamma's endDate: endDate is not the
+         resolution time for older events (e.g. 12:00 UTC for Jan 2025 events that resolve at
+         noon ET = 17:00 UTC). See polymarket_resolution_time().
+         last_price is NOT stored for Polymarket (NaN since 2026-10-02): the book's
+         last_trade_price is the last fill on the market in EITHER outcome token, so after a NO
+         trade it is a NO price (~ 1 - YES). Snapshots before 2026-10-02 contain that mixed value;
+         don't use them.
          There are also newer hourly events ("..., 12PM ET?") which often have zero volume and
          leftover quotes. They're kept; filter on volume/spread when analysing.
 
@@ -46,6 +54,7 @@ import pandas as pd
 
 import config
 from src.api import SESSION, deribit, get_json
+from src.checks import SNAPSHOT_GAP_WARN, snapshot_times
 from src.deribit_options import INSTRUMENT_RE
 from src.storage import save_parquet
 
@@ -99,13 +108,41 @@ def parse_polymarket_strike(label: str, kind: str) -> tuple[float | None, float 
     return None, nums[0], nums[1]
 
 
+MONTHS = {m: i for i, m in enumerate(["January", "February", "March", "April", "May", "June", "July", "August",
+                                       "September", "October", "November", "December"], start=1)}
+
+
+def polymarket_resolution_time(title: str, description: str, end_date) -> pd.Timestamp:
+    """Resolution time (UTC) from the market rules: date from the title ("... on October 3?",
+    "... on October 2, 5PM ET?"), time from the title ("5PM ET") or the description
+    ("12:00 in the ET timezone"), in New York time. The year is the one that puts the date closest
+    to Gamma's endDate (endDate is near the right day even when its time is wrong).
+    Falls back to endDate if the text can't be parsed."""
+    end = pd.Timestamp(end_date)
+    d = re.search(r"on (" + "|".join(MONTHS) + r") (\d{1,2})\b", title)
+    t_title = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(AM|PM) ET", title)
+    t_desc = re.search(r"(\d{1,2}):(\d{2}) in the ET timezone", description or "")
+    if not d or not (t_title or t_desc):
+        log.warning("Polymarket: can't parse resolution time from %r; using endDate %s", title, end)
+        return end
+    if t_title:
+        hour = int(t_title.group(1)) % 12 + (12 if t_title.group(3) == "PM" else 0)
+        minute = int(t_title.group(2) or 0)
+    else:
+        hour, minute = int(t_desc.group(1)), int(t_desc.group(2))
+    month, day = MONTHS[d.group(1)], int(d.group(2))
+    cands = [pd.Timestamp(year=y, month=month, day=day, hour=hour, minute=minute).tz_localize("America/New_York")
+             for y in (end.year - 1, end.year, end.year + 1)]
+    return min(cands, key=lambda c: abs(c - end)).tz_convert("UTC")
+
+
 def best_levels(book: dict) -> dict:
     bids = [(float(b["price"]), float(b["size"])) for b in book.get("bids", [])]
     asks = [(float(a["price"]), float(a["size"])) for a in book.get("asks", [])]
     bid = max(bids) if bids else (None, None)          # levels are not best-first, so take max/min
     ask = min(asks) if asks else (None, None)
-    return {"yes_bid": bid[0], "yes_bid_size": bid[1], "yes_ask": ask[0], "yes_ask_size": ask[1],
-            "last_price": float(book["last_trade_price"]) if book.get("last_trade_price") else None}
+    # last_trade_price is deliberately dropped: it can be a NO-token price (see module docstring)
+    return {"yes_bid": bid[0], "yes_bid_size": bid[1], "yes_ask": ask[0], "yes_ask_size": ask[1]}
 
 
 def polymarket_btc() -> pd.DataFrame:
@@ -130,7 +167,7 @@ def polymarket_btc() -> pd.DataFrame:
             rows.append({
                 "venue": "polymarket", "event": e["title"], "market_id": m["id"],
                 "question": m["question"], "kind": kind, "strike": strike, "range_low": lo, "range_high": hi,
-                "resolution_time": pd.Timestamp(m["endDate"]),
+                "resolution_time": polymarket_resolution_time(e["title"], m.get("description", ""), m["endDate"]),
                 "yes_token": json.loads(m["clobTokenIds"])[0],
                 "volume": float(m.get("volumeNum") or 0), "open_interest": None,
                 "settlement_source": "Binance BTC/USDT 1m close, 12:00 ET",
@@ -199,6 +236,10 @@ def main():
     snapshot_time = now_utc().floor("s")
     folder = config.SNAPSHOTS_DIR / f"{snapshot_time:%Y-%m-%d}"
     stamp = f"{snapshot_time:%H%M%S}"
+    previous = snapshot_times()
+    if len(previous) and snapshot_time - previous[-1] >= SNAPSHOT_GAP_WARN:
+        log.warning("GAP: no snapshot for %s (previous %s). Missed snapshots can't be recovered.",
+                    snapshot_time - previous[-1], previous[-1])
 
     # Each source is independent: one failing (API down, format change) doesn't lose the others.
     results = {}

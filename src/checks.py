@@ -13,6 +13,7 @@ import pandas as pd
 import config
 
 R, P = config.DATA_RAW, config.DATA_PROCESSED
+SNAPSHOT_GAP_WARN = pd.Timedelta("30min")   # snapshots run every 10 min; 30+ min without one is a gap
 
 # name -> (path, expected spacing). Spacing None = irregular (no gap check).
 SERIES = {
@@ -65,17 +66,32 @@ def coverage() -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("dataset")
 
 
-def snapshot_coverage() -> pd.DataFrame:
-    """Time between consecutive snapshots: anything well above 10 minutes is a gap (e.g. Mac asleep)."""
-    # file path: .../snapshots/YYYY-MM-DD/deribit_HHMMSS.parquet
+def snapshot_times() -> pd.DatetimeIndex:
+    """UTC time of every Deribit snapshot, from the file names (.../YYYY-MM-DD/deribit_HHMMSS.parquet)."""
     stamps = [Path(f).parent.name + " " + Path(f).stem.split("_")[-1] for f in snapshot_files("deribit")]
-    times = pd.DatetimeIndex(sorted(pd.to_datetime(stamps, format="%Y-%m-%d %H%M%S", utc=True)))
+    return pd.DatetimeIndex(sorted(pd.to_datetime(stamps, format="%Y-%m-%d %H%M%S", utc=True)))
+
+
+def snapshot_gaps(times: pd.DatetimeIndex | None = None, min_gap: pd.Timedelta = SNAPSHOT_GAP_WARN) -> pd.DataFrame:
+    """Every stretch of >= min_gap with no snapshot (PC asleep/off, logged out, network or API down)."""
+    times = snapshot_times() if times is None else times
+    if len(times) < 2:
+        return pd.DataFrame(columns=["last_before", "next_after", "length"])
+    g = pd.DataFrame({"last_before": times[:-1], "next_after": times[1:]})
+    g["length"] = g["next_after"] - g["last_before"]
+    return g[g["length"] >= min_gap].reset_index(drop=True)
+
+
+def snapshot_coverage() -> pd.DataFrame:
+    """Time between consecutive snapshots (scheduled every 10 min), and how stale the latest one is."""
+    times = snapshot_times()
     if len(times) < 2:
         return pd.DataFrame({"snapshots": [len(times)]})
     gaps = pd.Series(times[1:] - times[:-1], index=times[1:])
     return pd.DataFrame({
         "snapshots": [len(times)], "first": [times[0]], "last": [times[-1]],
-        "median_spacing": [gaps.median()], "gaps_over_15min": [(gaps > pd.Timedelta("15min")).sum()],
+        "since_last": [(pd.Timestamp.now(tz="UTC") - times[-1]).floor("s")],
+        "median_spacing": [gaps.median()], "gaps_over_30min": [(gaps >= SNAPSHOT_GAP_WARN).sum()],
         "longest_gap": [gaps.max()],
     })
 
@@ -218,8 +234,10 @@ def problems() -> pd.DataFrame:
     for name, r in cov[cov["missing_steps"] > 0].iterrows():
         out.append((name, "gaps", r["missing_steps"], f"{r['gap_blocks']} blocks, largest {r['largest_gap']} steps"))
     sc = snapshot_coverage()
-    if "gaps_over_15min" in sc and sc["gaps_over_15min"].iloc[0] > 0:
-        out.append(("snapshots", "gaps > 15 min", int(sc["gaps_over_15min"].iloc[0]), f"longest {sc['longest_gap'].iloc[0]}"))
+    if "gaps_over_30min" in sc and sc["gaps_over_30min"].iloc[0] > 0:
+        out.append(("snapshots", "gaps >= 30 min", int(sc["gaps_over_30min"].iloc[0]), f"longest {sc['longest_gap'].iloc[0]}"))
+    if "since_last" in sc and sc["since_last"].iloc[0] >= SNAPSHOT_GAP_WARN:
+        out.append(("snapshots", "stale: no snapshot for >= 30 min", 1, f"last {sc['last'].iloc[0]}"))
     tz = timezones()
     for _, r in tz[~tz["utc"]].iterrows():
         out.append((r["file"], "non-UTC timestamp", 1, r["column"]))

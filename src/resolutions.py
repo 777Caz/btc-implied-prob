@@ -41,6 +41,7 @@ import pandas as pd
 
 import config
 from src.api import deribit, get_json
+from src.checks import SNAPSHOT_GAP_WARN, snapshot_gaps, snapshot_times
 from src.storage import save_parquet
 
 log = logging.getLogger(__name__)
@@ -196,6 +197,21 @@ def main():
             job()
         except Exception:
             log.exception("Resolutions job %s failed", name)
+    check_snapshots()
+
+
+def check_snapshots():
+    """Daily health check of the live snapshots: the snapshot task can't report that it has stopped."""
+    times = snapshot_times()
+    now = pd.Timestamp.now(tz="UTC")
+    if not len(times) or now - times[-1] >= SNAPSHOT_GAP_WARN:
+        log.warning("STALE: no snapshot since %s; is the snapshot task running?", times[-1] if len(times) else "ever")
+    gaps = snapshot_gaps(times)
+    recent = gaps[gaps["next_after"] >= now - pd.Timedelta("1D")]
+    for _, g in recent.iterrows():
+        log.warning("GAP in last 24h: %s -> %s (%s)", g["last_before"], g["next_after"], g["length"])
+    day = times[times >= now - pd.Timedelta("1D")]
+    log.info("Snapshots in last 24h: %d of 144 expected", len(day))
 
 
 if __name__ == "__main__":
