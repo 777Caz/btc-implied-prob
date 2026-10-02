@@ -2,11 +2,13 @@
 
 **Short answer:** building the whole risk-neutral distribution from the option smile gives the
 best-*shaped* 30-day forecast so far. Its PIT histogram is flat, and DVOL's "too wide in the
-middle" problem is gone. But it does **not** forecast measurably better than plain DVOL, and it
-does **not** fix the upper-tail misses. BTC finished above the smile's 95th percentile 8.8% of the
-time (expected 5%), about the same as DVOL (7.9%). The upside miss isn't about the shape of the
-distribution. Most likely the risk-neutral (option-implied) distribution systematically understates
-BTC's real-world upside.
+middle" problem is gone. But it does **not** forecast measurably better than plain DVOL. BTC
+finished above the smile's 95th percentile 8.8% of the time (expected 5%), about the same as DVOL
+(7.9%). **The robustness checks (below, added 2026-10-02) weaken the upside-miss story:** the miss
+comes almost entirely from the 2023–24 rally, and with confidence intervals that allow for
+overlapping windows it is **not significant over the full sample** (8.8%, 95% CI 4.5–14.0%).
+The forwards are not affected by discounting, there is no look-ahead, and an exploratory option
+trade on the upside is inconclusive.
 
 ## What was built
 
@@ -82,7 +84,7 @@ Head-to-head, smile minus other (Newey-West p-values, daily sample):
 - **vs smile-ATM lognormal:** no significant difference (log score p = 0.25). The smile's
   *shape* adds little beyond its level.
 
-### Did the upper-tail misses improve? No.
+### Did the upper-tail misses improve? No (but see the robustness section: the miss itself is weak).
 - **The smile is worse on the upside than DVOL.** It puts *less* probability on rallies than DVOL
   does (P(>120%) 10.1% vs 11.6%), because BTC's smile usually has a put skew that thins the right
   tail. It misses above the 95th percentile a little more often (8.8% vs 7.9%).
@@ -94,6 +96,57 @@ Head-to-head, smile minus other (Newey-West p-values, daily sample):
   Over 2021–2026 BTC rose substantially, and markets that price in downside protection
   understate upside frequency. A 5.5-year sample dominated by one bull cycle can't separate a
   persistent premium from luck; the error bars on all tail rates are wide (±4–5 points).
+
+## Robustness checks (added 2026-10-02, `python -m src.phase3_robust`)
+
+Full tables in [robustness/RESULTS.md](robustness/RESULTS.md).
+
+1. **Forward error by tenor.** Parity forwards vs Deribit futures (489 comparisons on about 200
+   days). The median absolute error is 2.6 bp (< 7d), 3.0 bp (7–30d), 4.0 bp (30–90d) and 4.2 bp
+   (90d+). It grows slightly with tenor.
+2. **No discounting.** If Deribit's BTC prices were discounted, parity would read
+   c − p = DF·(1 − K/F) with DF < 1 growing with tenor. Fitted on Deribit's own marks in the
+   live snapshots, DF − 1 is about 0 bp at every tenor (+0.06 bp at a median 266 days), and the
+   snapshot `interest_rate` field is 0. So F = K/(1 − (c − p)) is right as it stands, and the
+   small growth of the error with tenor is noise: long tenors have fewer call/put pairs and
+   wider spreads.
+3. **No look-ahead.** Rebuilding the inputs of all 2,099 historical fits: the latest trade used
+   is 3 ms before 08:00, the earliest within 8 hours, and no expiry within 1 day of the origin.
+   DVOL hourly candles are stamped with their open time (checked live), so phase 2's "close at
+   08:00" shift is correct.
+4. **Tails by year.** Smile model. 95% CIs from a 30-day moving-block bootstrap, because daily
+   30-day windows overlap and plain binomial intervals would be far too narrow:
+
+   | origin year | above 95th pct | below 5th pct |
+   |---|---|---|
+   | 2021 | 6.4% [0, 15.5] | 4.2% [0, 12.8] |
+   | 2022 | 3.0% [0, 3.3] | 3.6% [0, 9.0] |
+   | 2023 | **14.7% [2.9, 28.5]** | 0.0% |
+   | 2024 | **16.9% [2.8, 35.7]** | 0.3% [0, 0.8] |
+   | 2025 | 1.7% [0, 5.0] | 2.5% [0, 7.4] |
+   | 2026 (to Aug) | 9.9% [0, 23.8] | **18.4% [1.8, 34.1]** |
+   | all | 8.8% [4.5, 14.0] | 3.9% [1.4, 7.2] |
+   | all except 2022 | 10.1% [4.7, 16.0] | 4.0% [1.1, 7.8] |
+
+   The upside miss is a 2023–24 phenomenon, and 2026 shows the mirror image on the downside. Over
+   the full sample the interval includes 5%. DVOL and realised vol show the same pattern by year.
+5. **EXPLORATORY option test.**
+   - **Trades:** buy a ~30-day 25-delta call, and separately a 25-delta risk reversal (long call,
+     short put), at 08:00 every 30 days, held to delivery. That gives 58 entries.
+   - **Pricing:** entry IV is the median trade IV in the 8h before 08:00. Every leg pays 1 vol point
+     of half-spread, above the 90th percentile of 2026 live spreads (0.72), plus Deribit fees.
+   - **Results:**
+     - long call: mean −0.25% of S0 (95% CI −1.7 to +1.5), hit rate 14%;
+     - risk reversal: +0.47% (CI −1.7 to +2.7), hit rate 67%.
+   - **Robustness of the result:** neither is distinguishable from zero, and that doesn't change with
+     the spread (0–2 vol points) or with which of the 30 possible start days is used. The gains
+     come from 2023–24; every other year is negative.
+   - **Status:** inconclusive. About 60 trades from one bull cycle can't separate a risk premium
+     from luck.
+
+**Implication for the thesis:** 30-day option history alone can't pin down the risk premium.
+Short-dated prediction-market events (many more independent outcomes) are the better place to
+measure it, which is why the Polymarket/Kalshi backfill comes next.
 
 ## Caveats
 
