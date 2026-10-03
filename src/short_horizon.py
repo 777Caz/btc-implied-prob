@@ -74,6 +74,8 @@ ALPHA_GRID = np.round(np.arange(0.0, 1.51, 0.05), 2)
 ALPHA_MIN_DAYS = 60
 TARGETS = {"noon NY": 12, "17:00 NY": 17}   # NY hour; outcome = close of the Binance 1-min candle opening then
 WEEK_RANGE = (5, 9)                       # days to expiry for the "1-week" smile
+GRID_SD, GRID_N = 16.0, 6001              # strike grid: +/- 16 ATM standard deviations
+LOG_FLOOR = -10.0                         # cap on the log score (~ a 5-sigma miss) so a few tail days can't dominate
 
 
 def month_key(ts: pd.Timestamp) -> pd.Timestamp:
@@ -235,7 +237,7 @@ def forecast(front, front_exp, origin, s, lam, alpha, idx_ref, b0):
     Ts = (s - origin).total_seconds() / YEAR_S
     F = float(np.exp(np.log(idx_ref) + Ts / T1 * np.log(F1 / idx_ref))) * b0
     w_s = lambda k: lam * p.w(np.asarray(k) / lam ** alpha)
-    dist = sm.distribution_from_w(w_s, F, Ts, n=2001, width=8.0)
+    dist = sm.distribution_from_w(w_s, F, Ts, n=GRID_N, width=GRID_SD)
     kk = np.linspace(-6, 6, 241) * np.sqrt(max(w_s(0.0), 1e-12))
     g = numeric_g(w_s, kk)[5:-5]                                   # drop finite-difference edges
     cal = float(np.max(w_s(kk) - p.w(kk)) / p.w(0.0))              # relative to the front's ATM total variance
@@ -291,6 +293,8 @@ def run(months_only: list[str] | None = None):
             base = {"origin": origin, "status": "ok", "front_days": (T1 - origin).total_seconds() / 86400,
                     "alpha_day_fit": a_fit, "alpha_used": a_used, "basis_binance": b0,
                     "event_types": ",".join(sorted({x for x, _ in ev_by_day.get(day, [])})),
+                    **{f"svi_{k}": getattr(front["svi"], k) for k in ("a", "b", "rho", "m", "s")},
+                    "front_atm_w": float(front["svi"].w(0.0)),
                     "front_butterfly_min_g": float(sm.butterfly_g(front["svi"], np.linspace(-6, 6, 241) * np.sqrt(front["svi"].w(0.0))).min())}
             for tname, hour in TARGETS.items():
                 # settlement on the SAME calendar date as the 08:00 UTC origin, at `hour` New York time
@@ -313,6 +317,7 @@ def run(months_only: list[str] | None = None):
                     rows.append({**base, "target": tname, "variant": vname, "settle": s, "y": y, "lambda": lm,
                                  "alpha": alpha, "events_before_target": ",".join(ev_before),
                                  "pit": pit, "logscore": dist.log_score(y), "mass": dist.mass(),
+                                 "tail_miss": bool(pit < 0.001 or pit > 0.999),
                                  "q05": float(dist.percentile(0.05)), "q95": float(dist.percentile(0.95)),
                                  "butterfly_min_g": gmin, "calendar_max_excess": cal})
         log.info("%s done (%d rows)", f[-15:-8], len(rows))
@@ -330,6 +335,8 @@ def wilson(k, n, z=1.96):
 
 
 def score(df: pd.DataFrame, base="vartime, a=0.5") -> pd.DataFrame:
+    """Log score capped at LOG_FLOOR (column ls); differences vs `base` are paired by day."""
+    df = df.assign(ls=df["logscore"].clip(lower=LOG_FLOOR))
     rows = []
     for (target, variant), g in df.groupby(["target", "variant"]):
         n = len(g)
@@ -338,9 +345,11 @@ def score(df: pd.DataFrame, base="vartime, a=0.5") -> pd.DataFrame:
              "pit_var_ratio": g["pit"].var() / (1 / 12), "ks_p": kstest(g["pit"], "uniform").pvalue,
              "below_5%": lo5 / n, "below_ci": "%.3f-%.3f" % wilson(lo5, n),
              "above_95%": hi5 / n, "above_ci": "%.3f-%.3f" % wilson(hi5, n),
-             "inside_25_75%": g["pit"].between(0.25, 0.75).mean(), "mean_logscore": g["logscore"].mean()}
-        b = df[(df["target"] == target) & (df["variant"] == base)].set_index("origin")["logscore"]
-        diff = (g.set_index("origin")["logscore"] - b).dropna()
+             "inside_25_75%": g["pit"].between(0.25, 0.75).mean(),
+             "tail_misses": int(g["tail_miss"].sum()), "logscore_floored": int((g["logscore"] < LOG_FLOOR).sum()),
+             "median_logscore": g["logscore"].median(), "mean_logscore_capped": g["ls"].mean()}
+        b = df[(df["target"] == target) & (df["variant"] == base)].set_index("origin")["ls"]
+        diff = (g.set_index("origin")["ls"] - b).dropna()
         r["logscore_vs_base"] = diff.mean()
         r["logscore_vs_base_se"] = diff.std(ddof=1) / np.sqrt(len(diff)) if len(diff) > 1 else np.nan
         rows.append(r)
@@ -412,6 +421,14 @@ def main():
                                     calendar_violations=("calendar_max_excess", lambda c: int((c > 1e-6).sum())),
                                     worst_g=("butterfly_min_g", "min"), worst_calendar=("calendar_max_excess", "max"))
     front_bfly = int((df.drop_duplicates("origin")["front_butterfly_min_g"] < -1e-4).sum())
+    # calendar diagnostic: is the violation driven by SVI's centre m sitting away from k = 0?
+    v = ok[ok["variant"] == "vartime, a=0.5"].copy()
+    v["m_in_sd"] = (v["svi_m"].abs() / np.sqrt(v["front_atm_w"])).astype(float)
+    v["violation"] = v["calendar_max_excess"] > 1e-6
+    cal_diag = v.groupby(pd.cut(v["m_in_sd"], [0, 0.25, 0.5, 1, 2, np.inf], include_lowest=True), observed=True).agg(
+        forecasts=("violation", "size"), violation_rate=("violation", "mean"),
+        median_excess_if_violated=("calendar_max_excess", lambda c: c[c > 1e-6].median()))
+    cal_diag.to_csv(OUT / "calendar_diagnostic.csv")
     lam = ok[ok["variant"].isin(["clock, a=0.5", "vartime, a=0.5", "vartime+events, a=0.5"])].pivot_table(
         index="target", columns="variant", values="lambda", aggfunc="mean")
     alpha = ok.drop_duplicates("origin")[["alpha_day_fit", "alpha_used"]].describe()
@@ -432,6 +449,8 @@ def main():
              "## alpha: daily fits from ~1-day vs ~1-week smiles, and the expanding median used", "```", f(alpha, True), "```", "",
              "## Arbitrage checks on every scaled smile (g < -1e-4 = butterfly; w_s > w1 = calendar)", "```", f(arb, True), "```",
              f"Front smiles that themselves have butterfly g < -1e-4: {front_bfly} of {df['origin'].nunique()} days.", "",
+             "### Calendar violations by |SVI centre m| in front standard deviations (vartime, a=0.5)",
+             "Excess is max(w_s - w1) relative to the front's ATM total variance.", "```", f(cal_diag, True), "```", "",
              "## Event excess (full sample, descriptive; forecasts use earlier events only)", "```", f(ev), "```"]
     (OUT / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
     log.info("Short horizon done -> %s", OUT)
