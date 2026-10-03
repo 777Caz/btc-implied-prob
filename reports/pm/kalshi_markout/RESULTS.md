@@ -1,11 +1,11 @@
-# Kalshi markouts and adverse selection, 17:00 NY daily markets (generated 2026-10-03 21:42 UTC)
+# Kalshi markouts and adverse selection, 17:00 NY daily markets (generated 2026-10-03 21:47 UTC)
 
 Sampled trade history (every 3rd settlement day). Trades 2521758, kept 2421430 with a real pre-trade book (two-sided, spread <= 10c). All numbers in the MAKER's terms, cents per contract, contract-weighted; CIs = 95% event-cluster bootstrap. Bucket = the maker's purchase price.
 
 ## Representativeness of the sampled events
 ```
  year  events  sampled  share  weekend share, all  weekend share, sampled  sampled contracts (M)  all 17:00 contracts (M)  sampled volume share
- 2024      58       19  0.328               0.172                   0.158                 16.682                   54.438                 0.306
+ 2024     140       47  0.336               0.071                   0.064                 16.682                   54.438                 0.306
  2025     365      122  0.334               0.285                   0.287                 17.659                   57.858                 0.305
  2026     275       91  0.331               0.284                   0.286                249.208                  757.315                 0.329
 ```

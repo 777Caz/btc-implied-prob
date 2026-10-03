@@ -115,8 +115,8 @@ def markout_table(t: pd.DataFrame, by: list[str]) -> pd.DataFrame:
 
 def representativeness(t: pd.DataFrame) -> pd.DataFrame:
     act = pd.read_csv(bt.OUT / "monthly_activity_spread_flow.csv", index_col=0) if (bt.OUT / "monthly_activity_spread_flow.csv").exists() else None
-    cat = pd.read_parquet(kc.CATALOG, columns=["event", "settle"])
-    cat = cat[cat["event"].str.startswith("KXBTCD") & cat["event"].str.endswith("17")].groupby("event")["settle"].first()
+    cat = pd.read_parquet(kc.CATALOG, columns=["series", "event", "settle"])          # 2024 events are named BTCD-...
+    cat = cat[(cat["series"] == "KXBTCD") & cat["event"].str.endswith("17")].groupby("event")["settle"].first()
     sampled = set(t["event"])
     rows = []
     for year, s in cat.groupby(cat.dt.year):
