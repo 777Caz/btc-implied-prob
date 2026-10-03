@@ -11,6 +11,9 @@ Tabs: Findings (report figures), Live (1, 2 and 4 below), Kalshi (3 + analysis f
      contracts, and the monthly favourite-longshot slope.
   4. Paper-trading log: signals, fills, P&L (no orders are ever sent).
 Run:  python -m src.dashboard   (rebuild after the 08:07 paper-trading run for today's panels)
+PDF (every tab in order, A4):  open dashboard.html#print and print, or headless Edge:
+  msedge --headless=new --no-pdf-header-footer --virtual-time-budget=30000
+         --print-to-pdf=reports/dashboard.pdf file:///<project>/reports/dashboard.html#print
 """
 import base64
 import glob
@@ -194,7 +197,7 @@ def gallery(tab: str) -> str:
             continue
         src = "data:image/png;base64," + base64.b64encode(f.read_bytes()).decode()
         out.append(f'<figure class="{"wide" if wide else ""}"><img loading="lazy" src="{src}" alt="{html.escape(title)}">'
-                   f'<figcaption><b>{html.escape(title)}.</b> {html.escape(caption)} <span class="src">({html.escape(path)})</span></figcaption></figure>')
+                   f'<figcaption><b>{html.escape(title)}{"" if title.endswith("?") else "."}</b> {html.escape(caption)} <span class="src">({html.escape(path)})</span></figcaption></figure>')
     return f'<div class="gallery">{"".join(out)}</div>'
 
 
@@ -231,6 +234,18 @@ figure { margin:0; background:var(--card); border:1px solid var(--rule); border-
 figure.wide { grid-column:1 / -1; }
 figure img { width:100%; height:auto; display:block; border-radius:4px; cursor:zoom-in; background:#fcfcfb; }
 figcaption { font-size:13px; color:var(--ink2); margin-top:8px; } figcaption b { color:var(--ink); }
+
+.tabtitle { display:none; }
+body.printall .tab { display:block; } body.printall .tabs { display:none; } body.printall .tabtitle { display:block; }
+@media print {
+  @page { size: A4; margin: 12mm; }
+  body { background:#fff; font-size:12px; } main { max-width:none; padding:0; }
+  .tab { display:block !important; } .tabs, #lightbox { display:none !important; } .tabtitle { display:block; }
+  .tab + .tab { break-before: page; }
+  figure, .card, .tile, ol.answer { break-inside: avoid; }
+  .gallery { grid-template-columns: 1fr; } .grid { grid-template-columns: 1fr 1fr; }
+  figure img { cursor:default; } .tablewrap { overflow:visible; }
+}
 #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; flex-direction:column; align-items:center; justify-content:center;
   padding:16px; z-index:10; cursor:zoom-out; } #lightbox[hidden] { display:none; }
 #lightbox img { max-width:100%; max-height:88vh; background:#fcfcfb; border-radius:4px; } #lightbox p { color:#fff; font-size:14px; max-width:900px; }
@@ -244,6 +259,7 @@ Option-implied probabilities (Deribit) vs Kalshi's 17:00 New York daily Bitcoin 
 </nav>
 
 <section id="tab-findings" class="tab">
+<h2 class="tabtitle">Findings</h2>
 <div class="tile">
  <div><b>0.99 &plusmn; 0.04</b><span>logit slope of option q (calibrated = 1)</span></div>
  <div><b>1.14 &plusmn; 0.04</b><span>logit slope of the Kalshi mid, 08:00 UTC</span></div>
@@ -261,6 +277,7 @@ __GALLERY_findings__
 </section>
 
 <section id="tab-live" class="tab">
+<h2 class="tabtitle">Live: options and Kalshi today, paper trading</h2>
 <h2>Current option-implied distributions</h2>
 <p class="note" id="dens-note"></p>
 <div class="card"><div id="dens" class="plot" style="height:420px"></div></div>
@@ -278,6 +295,7 @@ __GALLERY_findings__
 </section>
 
 <section id="tab-kalshi" class="tab">
+<h2 class="tabtitle">Kalshi analysis</h2>
 <h2>Calibration (interactive)</h2>
 <div class="grid">
  <div class="card"><div id="rel" class="plot"></div></div>
@@ -288,14 +306,17 @@ __GALLERY_kalshi__
 </section>
 
 <section id="tab-oneday" class="tab">
+<h2 class="tabtitle">1-day option forecasts</h2>
 <p class="note">Scaling the 08:00 UTC front-expiry smile to noon and 17:00 New York with variance time and macro-event days; validated on 1,869 days.</p>
 __GALLERY_oneday__
 </section>
 <section id="tab-thirty" class="tab">
+<h2 class="tabtitle">30-day option forecasts (phases 2-3)</h2>
 <p class="note">Phases 2&ndash;3: 30-day forecasts from DVOL and from the full option smile, scored against the Deribit delivery price.</p>
 __GALLERY_thirty__
 </section>
 <section id="tab-data" class="tab">
+<h2 class="tabtitle">Data</h2>
 <p class="note">What was collected, and how complete it is.</p>
 __GALLERY_data__
 </section>
@@ -303,6 +324,8 @@ __GALLERY_data__
 <div id="lightbox" hidden><img alt=""><p></p></div>
 <script>
 const D = __DATA__;
+const printAll = location.hash === '#print';
+if (printAll) document.body.classList.add('printall');
 const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 const ink2 = dark ? '#c3c2b7' : '#52514e', rule = dark ? '#383835' : '#e6e5e1';
 const BLUE = dark ? '#3987e5' : '#2a78d6', ORANGE = dark ? '#d95926' : '#eb6834', AQUA = dark ? '#199e70' : '#1baf7a';
@@ -370,7 +393,10 @@ function show(name) {
   history.replaceState(null, '', '#' + name);
 }
 tabs.forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
-show(location.hash.slice(1) || 'findings');
+if (!printAll) show(location.hash.slice(1) || 'findings');
+const resizeAll = () => document.querySelectorAll('.plot').forEach(p => { try { Plotly.Plots.resize(p); } catch (e) {} });
+window.addEventListener('beforeprint', () => { document.body.classList.add('printall'); resizeAll(); });
+window.addEventListener('afterprint', () => { if (!printAll) { document.body.classList.remove('printall'); resizeAll(); } });
 const lb = document.getElementById('lightbox');
 document.querySelectorAll('figure img').forEach(img => img.addEventListener('click', () => {
   lb.querySelector('img').src = img.src; lb.querySelector('p').innerHTML = img.closest('figure').querySelector('figcaption').innerHTML; lb.hidden = false; }));
