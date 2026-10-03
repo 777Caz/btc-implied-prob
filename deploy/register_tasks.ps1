@@ -1,6 +1,7 @@
-# Windows replacement for deploy/crontab.txt: registers two Task Scheduler jobs for this user.
+# Windows replacement for deploy/crontab.txt: registers three Task Scheduler jobs for this user.
 #   btc-implied-prob\snapshot     every 10 minutes          python -m src.snapshot
 #   btc-implied-prob\resolutions  daily 00:30 UTC           python -m src.resolutions
+#   btc-implied-prob\paper_trade  daily 08:07 UTC           python -m src.paper_trade
 #
 # Run from the project root in an ADMIN PowerShell (registering S4U tasks needs elevation):
 #     powershell -ExecutionPolicy Bypass -File deploy\register_tasks.ps1
@@ -50,6 +51,21 @@ $resSettings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask -TaskName "resolutions" -TaskPath $Folder -Force `
     -Action (New-Action "src.resolutions") -Trigger $resTrigger -Settings $resSettings -Principal $principal `
     -Description "Settlements / outcomes / Binance noon NY (src.resolutions)" | Out-Null
+
+# ── Paper trading: daily 08:07 UTC, after the 08:00 snapshot (src/paper_trade.py; no orders) ─────
+# Rebuilds the option q from the overnight Deribit trades, applies the Kalshi gap rule to the 08:00
+# snapshot and logs the signals; the resolutions job settles them.
+$ptAt = [DateTime]::SpecifyKind($now.ToUniversalTime().Date.AddDays(1).AddHours(8).AddMinutes(7), [DateTimeKind]::Utc)
+$ptTrigger = New-ScheduledTaskTrigger -Daily -At $ptAt
+$ptSettings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -WakeToRun `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "paper_trade" -TaskPath $Folder -Force `
+    -Action (New-Action "src.paper_trade") -Trigger $ptTrigger -Settings $ptSettings -Principal $principal `
+    -Description "Kalshi gap-rule paper trading log, no orders (src.paper_trade)" | Out-Null
 
 Get-ScheduledTask -TaskPath $Folder | ForEach-Object {
     $i = $_ | Get-ScheduledTaskInfo

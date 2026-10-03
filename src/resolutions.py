@@ -191,8 +191,9 @@ def binance_candles() -> pd.DataFrame:
 
 def main():
     config.setup_logging()
+    from src import paper_trade                                   # heavy imports; only needed here
     for name, job in [("deribit", deribit_deliveries), ("predmarkets", predmarket_resolutions),
-                      ("binance", binance_candles)]:
+                      ("binance", binance_candles), ("paper trade settle", paper_trade.settle)]:
         try:
             job()
         except Exception:
