@@ -67,6 +67,7 @@ ORDER_SIZES = (100, 10)
 N_BOOT = 2000
 RNG = np.random.default_rng(11)
 EPS = 0.005                                   # clip mids away from 0/1 before logit
+MAX_SPREAD = 0.10                             # wider books (pre-2026 often 1c/99c placeholders) carry no price
 CELL = ["lead", "event_hour"]                     # one analysis cell = lead time x event hour
 
 
@@ -74,30 +75,29 @@ CELL = ["lead", "event_hour"]                     # one analysis cell = lead tim
 def quotes_at_leads() -> pd.DataFrame:
     cat = pd.read_parquet(CATALOG)
     cat = cat[(cat["series"] == "KXBTCD") & (cat["strike_type"] == "greater") & cat["outcome"].notna()]
-    cat = cat.set_index("ticker")
-    rows = []
+    # Target quote minute per (market, quote time), kept only while the market is open; the quotes
+    # are then picked up with one join per event file instead of a lookup per market and time.
+    targets = []
+    for name, lead in LEADS.items():
+        targets.append(cat.assign(lead=name, t=(cat["close_time"] - lead).dt.floor("min")))
+    targets.append(cat.assign(lead=AT_0800, t=cat["close_time"].dt.normalize() + pd.Timedelta(hours=8)))  # same UTC day
+    tg = pd.concat(targets, ignore_index=True)
+    tg = tg[(tg["t"] >= tg["open_time"].dt.ceil("min")) & (tg["t"] < tg["close_time"])]
+    tg = tg[["ticker", "t", "event", "settle", "lead", "floor_strike", "outcome"]].rename(columns={"floor_strike": "strike"})
+    parts = []
     for f in sorted(glob.glob(str(FILLED / "*.parquet"))):
         q = pd.read_parquet(f, columns=["t", "ticker", "bid", "ask"])
-        q = q[q["ticker"].isin(cat.index)]
-        if q.empty:
-            continue
-        q = q.set_index(["ticker", "t"]).sort_index()
-        for tk in q.index.get_level_values(0).unique():
-            m, qt = cat.loc[tk], q.loc[tk]
-            times = {name: (m["close_time"] - lead).floor("min") for name, lead in LEADS.items()}
-            times[AT_0800] = m["close_time"].normalize() + pd.Timedelta(hours=8)    # same UTC day as settlement
-            for name, t in times.items():
-                if t < m["open_time"].ceil("min") or t >= m["close_time"] or t not in qt.index:
-                    continue
-                r = qt.loc[t]
-                rows.append({"ticker": tk, "event": m["event"], "settle": m["settle"], "lead": name,
-                             "strike": m["floor_strike"], "bid": float(r["bid"]), "ask": float(r["ask"]),
-                             "outcome": m["outcome"]})
-    d = pd.DataFrame(rows)
+        q = q.merge(tg, on=["ticker", "t"], how="inner")
+        if not q.empty:
+            parts.append(q)
+    d = pd.concat(parts, ignore_index=True)
+    d[["bid", "ask"]] = d[["bid", "ask"]].astype(float)
+    d = d[["ticker", "event", "settle", "lead", "strike", "bid", "ask", "outcome"]]
     d["event_hour"] = d["settle"].dt.tz_convert(NY).dt.hour.map({12: "12:00 NY", 17: "17:00 NY"})
     d["day"] = d["settle"].dt.tz_convert(NY).dt.date.astype(str)
     d["period"] = np.where(d["settle"] < HOLDOUT_START, "pre-2026", "2026")
     d["two_sided"] = d["bid"].notna() & d["ask"].notna() & (d["ask"] > d["bid"])
+    d["usable"] = d["two_sided"] & (d["ask"] - d["bid"] <= MAX_SPREAD + 1e-9)
     return d
 
 
@@ -286,8 +286,9 @@ def main():
     d = quotes_at_leads()
     d.to_parquet(OUT / "quotes_at_leads.parquet")
     avail = d.groupby(CELL + ["period"]).agg(markets=("ticker", "size"), n_events=("event", "nunique"),
-                                            days=("day", "nunique"), two_sided_share=("two_sided", "mean"))
-    q = d[d["two_sided"]].copy()
+                                            days=("day", "nunique"), two_sided_share=("two_sided", "mean"),
+                                            usable_share=("usable", "mean"))
+    q = d[d["usable"]].copy()
     q["mid"] = (q["bid"] + q["ask"]) / 2
     fits, oos = primary_logit(q)
     rel, brier = reliability_and_brier(q)
@@ -302,7 +303,7 @@ def main():
     lines = [f"# Kalshi BTC above-K calibration (generated {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC)", "",
              f"Markets {d['ticker'].nunique()}, events {d['event'].nunique()}, settlement days {d['day'].nunique()}, "
              f"{d['settle'].min():%Y-%m-%d} to {d['settle'].max():%Y-%m-%d}. `days` = effective N (independent outcomes).", "",
-             "## Quote availability (two-sided share)", "```", fmt(avail, True), "```",
+             f"## Quote availability (two-sided share; usable = two-sided with spread <= {MAX_SPREAD * 100:.0f}c, the analysis sample)", "```", fmt(avail, True), "```",
              "## PRIMARY: P(YES) = sigmoid(a + b logit(mid)); calibrated = (a=0, b=1); b>1 = favourite-longshot bias",
              "SEs clustered by event. Estimation = events before 2026-01-01, holdout = 2026.", "```", fmt(fits), "```",
              "### Out of sample: pre-2026 recalibration applied to 2026 (negative diff = recalibration helps)",
