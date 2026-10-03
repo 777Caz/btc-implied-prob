@@ -1,5 +1,7 @@
 """
-Research dashboard: one static HTML page (Plotly from a CDN, data embedded), reports/dashboard.html.
+Research dashboard: one static HTML page (Plotly from a CDN, data and figures embedded), reports/dashboard.html.
+Tabs: Findings (report figures), Live (1, 2 and 4 below), Kalshi (3 + analysis figures), 1-day forecasts,
+30-day options (phases 2-3), Data. Every PNG is embedded as base64, so the file works on its own.
 
   1. Current option-implied densities: SVI fitted to the mark IVs of every expiry in the latest
      Deribit snapshot, Breeden-Litzenberger densities, as a heatmap (expiry x price).
@@ -10,6 +12,7 @@ Research dashboard: one static HTML page (Plotly from a CDN, data embedded), rep
   4. Paper-trading log: signals, fills, P&L (no orders are ever sent).
 Run:  python -m src.dashboard   (rebuild after the 08:07 paper-trading run for today's panels)
 """
+import base64
 import glob
 import html
 import json
@@ -115,6 +118,86 @@ def fmt(v):
     return str(v)
 
 
+# ── Figure gallery: every chart the project produced, embedded so the page is one file ───────
+FIGURES = {   # tab: [(path under reports/, title, caption, wide)]
+    "findings": [
+        ("figures/report/fig1_option_to_probability.png", "From option trades to a 1-day probability",
+         "One day: Deribit trades and the fitted SVI smile at 08:00 UTC, then q = P(S > K) at 17:00 NY next to Kalshi's mids.", True),
+        ("figures/report/fig4_kalshi_vs_options.png", "Kalshi is flatter than the options",
+         "Kalshi mid minus option q by price bucket, and reliability of both on the same 8,574 contracts: q is calibrated, the mid too flat.", True),
+        ("figures/report/fig3_kalshi_calibration.png", "Kalshi calibration and the price-floor check",
+         "Reliability 1h before settlement, and the favourite-longshot slope b with mids trimmed or selected by distance from the money.", True),
+        ("figures/report/fig5_encompassing_staleness.png", "Which price carries the information?",
+         "Encompassing weights of the Kalshi mid and option q, with the usual 8-hour smile and with smiles from only the last 2 hours or 1 hour.", True),
+        ("figures/report/fig6_trade_tests.png", "Can the gap be traded?",
+         "Taker and maker P&L with 95% CIs. The maker edge disappears once fills are simulated from Kalshi's trade history.", True),
+        ("figures/report/fig7_markouts.png", "What resting orders earn",
+         "Markouts after a fill (maker's view) and P&L to settlement by purchase price: favourites win, longshots lose.", True),
+        ("figures/report/fig8_bias_over_time.png", "Bias over time and market structure",
+         "Monthly slope b, quoted spread, taker longshot buying and volume, with the 2026 holdout and the Wintermute date.", True),
+        ("figures/report/fig2_short_horizon_validation.png", "The 1-day option forecasts are calibrated",
+         "PIT histograms on 1,952 days: flat = calibrated; the small central hump = slightly too wide (a small variance premium).", True),
+    ],
+    "kalshi": [
+        ("pm/kalshi_calibration/reliability.png", "Reliability by quote time and period",
+         "Share settling YES against the Kalshi mid, 24h / 8h / 1h before and at 08:00 UTC, pre-2026 vs 2026.", True),
+        ("pm/kalshi_vs_options/kalshi_vs_options.png", "Kalshi mid vs option q, every contract",
+         "Scatter of mid against q at 08:00 UTC and the mean gap by bucket with day-clustered CIs.", True),
+        ("pm/kalshi_gap_trade/cumulative_pnl.png", "Gap rule: cumulative P&L",
+         "Taker and (optimistic, fill-assumed) maker P&L at T = 2, 3, 5c, 100 contracts per trade; dashed line = 2026 holdout.", True),
+        ("pm/kalshi_bias_time/bias_vs_activity.png", "Bias vs activity, spreads and taker flow (full detail)",
+         "Monthly slopes at three quote times, the gap vs options, spreads, taker flow by side, volume and open interest.", True),
+    ],
+    "oneday": [
+        ("intraday/intraday_profile.png", "Intraday variance profile",
+         "Share of a day's variance per minute from squared 1-minute Binance returns, weekday vs weekend: the basis of variance time.", True),
+        ("intraday/intraday_by_year.png", "The profile by year",
+         "The intraday shape is stable across years; the weekend level falls from about 0.73 of a weekday in 2021.", True),
+        ("short_horizon/event_excess.png", "Macro-event days",
+         "Excess variance around CPI, NFP and FOMC releases, from earlier events only: most of it arrives within minutes.", False),
+        ("short_horizon/pit_histograms.png", "Validation of every variant",
+         "PIT histograms for clock vs variance time, with and without events, alpha 0.5 vs fitted.", False),
+    ],
+    "thirty": [
+        ("phase2/vol_levels.png", "DVOL vs realised volatility",
+         "DVOL averaged about 60% against 51% realised over the next 30 days: a variance risk premium.", True),
+        ("phase3/density_heatmap.png", "Risk-neutral density by days ahead",
+         "From the live snapshot of 30 Sep 2026: smile densities per expiry, interpolated in total variance, with the 5th, 50th and 95th percentiles.", True),
+        ("phase3/smile_fits.png", "SVI smile fits per expiry", "Implied vols of out-of-the-money options in the 30 Sep 2026 snapshot with the fitted SVI curve and fit error per expiry.", False),
+        ("phase3/expiry_densities.png", "Densities by expiry", "Breeden-Litzenberger densities per expiry (30 Sep 2026) against a DVOL lognormal: the smile puts more mass in the centre and the tails.", False),
+        ("phase3/smile_vs_dvol_cone.png", "Smile vs DVOL 30-day cone", "Percentile bands from the full smile against a DVOL lognormal, from 30 Sep 2026: close at the 5th/95th, the smile is narrower in the middle.", False),
+        ("phase2/forward_cone.png", "Forward cone", "DVOL-based 30-day percentile cone from today.", False),
+        ("phase2/historical_cones.png", "Historical 30-day cones", "Non-overlapping 30-day cones since 2021 with the realised path: DVOL 8 of 67 outside 5-95% (expected 6.7), trailing realised vol 13 of 67.", True),
+        ("phase3/pit_histograms.png", "Calibration of the 30-day forecasts (smile)", "PIT histograms: the smile's are flat (variance ratio 1.02).", False),
+        ("phase2/pit_histograms.png", "Calibration of the 30-day forecasts (DVOL, realised vol)", "DVOL is too wide in the middle; realised vol too narrow.", False),
+        ("phase3/reliability.png", "Reliability of strike probabilities (smile)", "Predicted vs observed frequency of BTC ending above each strike.", False),
+        ("phase2/reliability.png", "Reliability of strike probabilities (DVOL)", "The same for the DVOL lognormal and realised-vol models.", False),
+        ("phase3/tail_breaches.png", "Tail misses by model",
+         "Share of 30-day windows finishing below the 5th / above the 95th percentile, by model, with Newey-West 95% CIs: every model misses a little on the upside, none significantly.", True),
+    ],
+    "data": [
+        ("figures/00_data_coverage.png", "Data coverage", "Every dataset's time span and gaps.", True),
+        ("figures/02_btc_price.png", "BTC price", "Bitcoin price history used throughout.", False),
+        ("figures/03_btc_vs_dvol.png", "BTC vs DVOL", "Price against Deribit's 30-day implied volatility index.", False),
+        ("figures/04_option_trades.png", "Option trades", "Deribit option trades per month, 2021-2026.", False),
+        ("figures/05_live_snapshot.png", "A live snapshot", "One synchronised snapshot of the Deribit chain and the prediction markets.", False),
+    ],
+}
+
+
+def gallery(tab: str) -> str:
+    out = []
+    for path, title, caption, wide in FIGURES[tab]:
+        f = R / path
+        if not f.exists():
+            log.warning("dashboard: missing %s", f)
+            continue
+        src = "data:image/png;base64," + base64.b64encode(f.read_bytes()).decode()
+        out.append(f'<figure class="{"wide" if wide else ""}"><img loading="lazy" src="{src}" alt="{html.escape(title)}">'
+                   f'<figcaption><b>{html.escape(title)}.</b> {html.escape(caption)} <span class="src">({html.escape(path)})</span></figcaption></figure>')
+    return f'<div class="gallery">{"".join(out)}</div>'
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BTC Options vs Kalshi</title>
@@ -136,41 +219,88 @@ p.sub, .note { color:var(--ink2); margin:0 0 12px; } .note { font-size:13px; }
 table { border-collapse:collapse; font-size:12.5px; width:100%; }
 th, td { padding:4px 8px; border-bottom:1px solid var(--rule); text-align:right; white-space:nowrap; }
 th { color:var(--ink2); font-weight:600; position:sticky; top:0; background:var(--card); }
+.tabs { display:flex; flex-wrap:wrap; gap:6px; margin:16px 0 8px; border-bottom:1px solid var(--rule); }
+.tabs button { font:inherit; font-size:14px; padding:8px 14px; border:1px solid transparent; border-bottom:none; background:none;
+  color:var(--ink2); cursor:pointer; border-radius:8px 8px 0 0; }
+.tabs button[aria-selected="true"] { color:var(--ink); background:var(--card); border-color:var(--rule); font-weight:600; margin-bottom:-1px; }
+.tab { display:none; } .tab.on { display:block; }
+ol.answer { margin:12px 0 4px; padding-left:22px; } ol.answer li { margin:4px 0; }
+.gallery { display:grid; grid-template-columns:repeat(auto-fit, minmax(460px, 1fr)); gap:16px; margin-top:16px; }
+@media (max-width:520px) { .gallery { grid-template-columns:1fr; } }
+figure { margin:0; background:var(--card); border:1px solid var(--rule); border-radius:10px; padding:12px; min-width:0; }
+figure.wide { grid-column:1 / -1; }
+figure img { width:100%; height:auto; display:block; border-radius:4px; cursor:zoom-in; background:#fcfcfb; }
+figcaption { font-size:13px; color:var(--ink2); margin-top:8px; } figcaption b { color:var(--ink); }
+#lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:16px; z-index:10; cursor:zoom-out; } #lightbox[hidden] { display:none; }
+#lightbox img { max-width:100%; max-height:88vh; background:#fcfcfb; border-radius:4px; } #lightbox p { color:#fff; font-size:14px; max-width:900px; }
 </style></head><body><main>
 <h1>BTC options vs Kalshi</h1>
-<p class="sub">Generated __GENERATED__. Option-implied probabilities (Deribit) vs Kalshi's 17:00 New York daily Bitcoin markets.
-Research only; the paper-trading log never sends orders.</p>
+<p class="sub">Generated __GENERATED__. Are prediction markets efficient once you account for the risk premium in options?
+Option-implied probabilities (Deribit) vs Kalshi's 17:00 New York daily Bitcoin markets. Research only; the paper-trading log never sends orders.</p>
+<nav class="tabs" role="tablist">
+ <button data-tab="findings">Findings</button><button data-tab="live">Live</button><button data-tab="kalshi">Kalshi</button>
+ <button data-tab="oneday">1-day forecasts</button><button data-tab="thirty">30-day options</button><button data-tab="data">Data</button>
+</nav>
+
+<section id="tab-findings" class="tab">
 <div class="tile">
  <div><b>0.99 &plusmn; 0.04</b><span>logit slope of option q (calibrated = 1)</span></div>
  <div><b>1.14 &plusmn; 0.04</b><span>logit slope of the Kalshi mid, 08:00 UTC</span></div>
  <div><b>0.0962 / 0.0962</b><span>Brier: Kalshi mid / option q (518 days)</span></div>
  <div><b>&asymp; 0&cent;</b><span>maker edge per signal with simulated fills, 2026</span></div>
 </div>
+<ol class="answer">
+ <li><b>The options get it right.</b> The 1-day option probability q is calibrated on Kalshi's strikes.</li>
+ <li><b>Kalshi has a favourite-longshot bias in 2026</b> (slope 1.18&ndash;1.36). It survives the 1&cent; price-floor check; before 2026 it was mostly that floor.</li>
+ <li><b>Kalshi is flatter than the options by 2&ndash;4&cent;, but just as informative</b>: equal Brier scores, similar information with fresh option data.</li>
+ <li><b>The gap can't be traded.</b> Takers lose to fees and the spread; maker profits vanish once fills are simulated.</li>
+ <li><b>Kalshi is efficient up to its costs.</b> The bias coincides with more takers buying longshots in 2026 (suggestive, not significant).</li>
+</ol>
+__GALLERY_findings__
+</section>
 
-<h2>1. Current option-implied distributions</h2>
+<section id="tab-live" class="tab">
+<h2>Current option-implied distributions</h2>
 <p class="note" id="dens-note"></p>
 <div class="card"><div id="dens" class="plot" style="height:420px"></div></div>
-
-<h2>2. Today: Kalshi vs options at 08:00 UTC</h2>
+<h2>Today: Kalshi vs options at 08:00 UTC</h2>
 <p class="note" id="gap-note"></p>
 <div class="grid">
  <div class="card"><div id="gapq" class="plot"></div></div>
  <div class="card"><div id="gapbar" class="plot"></div></div>
 </div>
+<h2>Paper-trading log</h2>
+<p class="note">Gap rule at 08:00 UTC for T = 2, 3, 5&cent;, taker and maker. Maker fills from Kalshi's public trade history
+("through" = a later trade went beyond our price). P&amp;L in cents per contract after fees.</p>
+<div class="card"><div id="cum" class="plot" style="height:300px"></div></div>
+<div class="card tablewrap" style="margin-top:16px">__PAPER_TABLE__</div>
+</section>
 
-<h2>3. Calibration</h2>
+<section id="tab-kalshi" class="tab">
+<h2>Calibration (interactive)</h2>
 <div class="grid">
  <div class="card"><div id="rel" class="plot"></div></div>
  <div class="card"><div id="same" class="plot"></div></div>
 </div>
 <div class="card" style="margin-top:16px"><div id="bt" class="plot" style="height:320px"></div></div>
+__GALLERY_kalshi__
+</section>
 
-<h2>4. Paper-trading log</h2>
-<p class="note">Gap rule at 08:00 UTC for T = 2, 3, 5&cent;, taker and maker. Maker fills from Kalshi's public trade history
-("through" = a later trade went beyond our price). P&amp;L in cents per contract after fees.</p>
-<div class="card"><div id="cum" class="plot" style="height:300px"></div></div>
-<div class="card tablewrap" style="margin-top:16px">__PAPER_TABLE__</div>
+<section id="tab-oneday" class="tab">
+<p class="note">Scaling the 08:00 UTC front-expiry smile to noon and 17:00 New York with variance time and macro-event days; validated on 1,869 days.</p>
+__GALLERY_oneday__
+</section>
+<section id="tab-thirty" class="tab">
+<p class="note">Phases 2&ndash;3: 30-day forecasts from DVOL and from the full option smile, scored against the Deribit delivery price.</p>
+__GALLERY_thirty__
+</section>
+<section id="tab-data" class="tab">
+<p class="note">What was collected, and how complete it is.</p>
+__GALLERY_data__
+</section>
 </main>
+<div id="lightbox" hidden><img alt=""><p></p></div>
 <script>
 const D = __DATA__;
 const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -230,6 +360,22 @@ const cumTraces = Object.entries(D.cum || {}).map(([k, c], i) => ({ x:c.x, y:c.y
 Plotly.newPlot('cum', cumTraces.length ? cumTraces : [{x:[], y:[]}],
   Object.assign(base('Cumulative paper P&L, cents per contract summed over signals (fills "through")', 'settlement date', 'cents'),
     {xaxis:{type:'category', title:{text:'settlement date'}, gridcolor:rule}}), cfg);
+// tabs (remembered in the URL hash) and the image lightbox
+const tabs = [...document.querySelectorAll('.tabs button')];
+function show(name) {
+  if (!document.getElementById('tab-' + name)) name = 'findings';
+  tabs.forEach(b => b.setAttribute('aria-selected', b.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(s => s.classList.toggle('on', s.id === 'tab-' + name));
+  document.querySelectorAll('#tab-' + name + ' .plot').forEach(p => { try { Plotly.Plots.resize(p); } catch (e) {} });
+  history.replaceState(null, '', '#' + name);
+}
+tabs.forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
+show(location.hash.slice(1) || 'findings');
+const lb = document.getElementById('lightbox');
+document.querySelectorAll('figure img').forEach(img => img.addEventListener('click', () => {
+  lb.querySelector('img').src = img.src; lb.querySelector('p').innerHTML = img.closest('figure').querySelector('figcaption').innerHTML; lb.hidden = false; }));
+lb.addEventListener('click', () => { lb.hidden = true; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') lb.hidden = true; });
 </script></body></html>
 """
 
@@ -241,6 +387,8 @@ def main():
     page = (PAGE.replace("__DATA__", json.dumps(data, default=lambda o: None).replace("NaN", "null"))
             .replace("__PAPER_TABLE__", table or "<p>No paper-trading log yet.</p>")
             .replace("__GENERATED__", f"{pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC"))
+    for tab in FIGURES:
+        page = page.replace(f"__GALLERY_{tab}__", gallery(tab))
     OUT.write_text(page, encoding="utf-8")
     log.info("dashboard -> %s (%.0f KB)", OUT, len(page) / 1024)
 
