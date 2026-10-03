@@ -42,12 +42,14 @@ OUT.mkdir(parents=True, exist_ok=True)
 NY = "America/New_York"
 BASIS_WINDOW = (-2, 1)          # minutes around 17:00 NY for Deribit index_price at settlement
 BASIS_LOOKBACK = 30             # previous measured days in the trailing median
+RECENT_HOURS = (1, 2)           # staleness check: front smile from only the last 1 / 2 hours of trades
+RECENT_GATES = {"min_trades": 8, "min_strikes": 4, "min_span_sd": 0.5}    # looser than phase 3's 15 / 5 / 1.0
 BUCKETS = np.array([0, .05, .10, .20, .30, .40, .50, .60, .70, .80, .90, .95, 1.0])
 
 
 def kalshi_quotes() -> pd.DataFrame:
     d = pd.read_parquet(kc.OUT / "quotes_at_leads.parquet")
-    d = d[d["usable"] & (d["lead"] == kc.AT_0800) & (d["event_hour"] == "17:00 NY")].copy()
+    d = d[(d["bid"].notna() | d["ask"].notna()) & (d["lead"] == kc.AT_0800) & (d["event_hour"] == "17:00 NY")].copy()
     d["mid"] = (d["bid"] + d["ask"]) / 2
     ev = pd.read_parquet(kc.CATALOG, columns=["event", "expiration_value"]).groupby("event")["expiration_value"].first()
     d["brti_settle"] = d["event"].map(ev)
@@ -65,6 +67,19 @@ def variance_models():
     excess = sh.event_excess(d, events, models)
     models = {m: sh.VarianceModel(d, events, m, excess) for m in months}
     return models, ev_by_day
+
+
+def recent_front(t: pd.DataFrame, origin, T1, idx_ref, hours: int):
+    """Front smile from trades in the last `hours` before 08:00 only (looser gates). Each trade's
+    log-moneyness uses its own index price times the parity basis (from the usual 8-hour window),
+    so the smile is re-centred on the 08:00 forward."""
+    w = t.loc[origin - sh.WINDOW: origin - pd.Timedelta("1ms")]
+    w = w[w["expiry"] > origin]
+    basis, _ = sh.basis_by_expiry(w)
+    g = w[(w["expiry"] == T1) & (w.index >= origin - pd.Timedelta(hours=hours))]
+    if g.empty or not np.isfinite(basis.get(T1, np.nan)):
+        return None
+    return sh.fit_expiry(origin, g, basis[T1], idx_ref, constrain_m=True, **RECENT_GATES)
 
 
 def option_q(quotes: pd.DataFrame) -> pd.DataFrame:
@@ -105,6 +120,12 @@ def option_q(quotes: pd.DataFrame) -> pd.DataFrame:
                 dist, gmin, cal = sh.forecast(inp["front"], T1, origin, s, lam, 0.5, inp["idx_ref"], b0)
                 out[f"dist_{name}"] = dist
                 out.update({"butterfly_min_g": gmin, "calendar_max_excess": cal, f"F_{name}": dist.forward})
+            for h in RECENT_HOURS:
+                fr = recent_front(t, origin, T1, inp["idx_ref"], h)
+                out[f"trades_{h}h"] = int(((t.index >= origin - pd.Timedelta(hours=h)) & (t.index < origin) & (t["expiry"] == T1)).sum())
+                if fr is not None:
+                    dist, _, _ = sh.forecast(fr, T1, origin, s, lam, 0.5, inp["idx_ref"], b_brti if np.isfinite(b_brti) else 1.0)
+                    out[f"dist_q_{h}h"], out[f"rmse_{h}h"] = dist, fr["rmse_vol_pts"]
             rows.append(out)
         log.info("%s done (%d days)", mth, len(rows))
     return pd.DataFrame(rows)
@@ -113,8 +134,10 @@ def option_q(quotes: pd.DataFrame) -> pd.DataFrame:
 def attach_q(quotes: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
     ok = days[days["status"] == "ok"].set_index("event")
     q = quotes[quotes["event"].isin(ok.index)].copy()
-    for name in ("q", "q_raw"):
-        q[name] = [ok.at[e, f"dist_{name}"].p_above(k) for e, k in zip(q["event"], q["strike"])]
+    for name in ["q", "q_raw"] + [f"q_{h}h" for h in RECENT_HOURS]:
+        col = ok[f"dist_{name}"] if f"dist_{name}" in ok else pd.Series(np.nan, index=ok.index)
+        q[name] = [col.at[e].p_above(k) if isinstance(col.at[e], sh.sm.Distribution) else np.nan
+                   for e, k in zip(q["event"], q["strike"])]
         q[name] = q[name].clip(0, 1)
     return q
 
@@ -122,7 +145,9 @@ def attach_q(quotes: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
 # ── Analysis ────────────────────────────────────────────────────────────────────────────────
 def periods(g):
     for period in ("pre-2026", "2026", "all"):
-        yield period, (g if period == "all" else g[g["period"] == period])
+        s = g if period == "all" else g[g["period"] == period]
+        if s["event"].nunique() >= 10:
+            yield period, s
 
 
 def diff_table(q: pd.DataFrame) -> pd.DataFrame:
@@ -150,12 +175,12 @@ def calib_table(q: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def encompassing(q: pd.DataFrame) -> pd.DataFrame:
+def encompassing(q: pd.DataFrame, opt: str = "q") -> pd.DataFrame:
     rows = []
     for period, s in periods(q):
-        X = np.column_stack([kc.logit(s["mid"].to_numpy()), kc.logit(s["q"].to_numpy())])
+        X = np.column_stack([kc.logit(s["mid"].to_numpy()), kc.logit(s[opt].to_numpy())])
         beta, se = logistic_multi(s["outcome"].to_numpy(float), X, s["event"].to_numpy())
-        rows.append({"period": period, **kc.n_info(s), "a": beta[0], "a_se": se[0], "b1_kalshi": beta[1], "b1_se": se[1],
+        rows.append({"period": period, "options": opt, **kc.n_info(s), "a": beta[0], "a_se": se[0], "b1_kalshi": beta[1], "b1_se": se[1],
                      "z_b1": beta[1] / se[1], "b2_options": beta[2], "b2_se": se[2], "z_b2": beta[2] / se[2],
                      "corr_logits": np.corrcoef(X.T)[0, 1]})
     return pd.DataFrame(rows)
@@ -174,6 +199,33 @@ def brier_table(q: pd.DataFrame) -> pd.DataFrame:
             r[f"{a}-{b}"], r[f"{a}-{b}_ci"] = ((s[a] - y) ** 2 - (s[b] - y) ** 2).mean(), f"[{lo:.4f}, {hi:.4f}]"
         rows.append(r)
     return pd.DataFrame(rows)
+
+
+def staleness(q: pd.DataFrame, days: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Smiles from only the last 1-2 hours of trades: coverage, encompassing and Brier on the days
+    where the short-window smile exists, against the usual 8-hour smile on the SAME contracts."""
+    ok = days[days["status"] == "ok"]
+    cov, enc, bri = [], [], []
+    for h in RECENT_HOURS:
+        name = f"q_{h}h"
+        have = ok[f"dist_{name}"].notna() if f"dist_{name}" in ok else pd.Series(False, index=ok.index)
+        cov.append({"window": f"last {h}h", "days_ok_8h": len(ok), "days_fitted": int(have.sum()), "share": have.mean(),
+                    "median_trades": ok[f"trades_{h}h"].median(), "median_rmse_vol_pts": ok.loc[have, f"rmse_{h}h"].median(),
+                    "median_rmse_8h_same_days": ok.loc[have, "front_rmse_vol_pts"].median()})
+        s = q[q[name].notna()].assign(blend=lambda x: (x["mid"] + x[name]) / 2)
+        enc += [encompassing(s, name), encompassing(s, "q")]
+        for period, g in periods(s):
+            y = g["outcome"]
+            r = {"window": f"last {h}h", "period": period, **kc.n_info(g)}
+            for c in ("mid", "q", name, "blend"):
+                r[f"brier_{'q_window' if c == name else c}"] = ((g[c] - y) ** 2).mean()
+            for a, b in ((name, "mid"), (name, "q")):
+                lo, hi = kc.cluster_boot(g, lambda x: (x[a] - x["outcome"]) ** 2 - (x[b] - x["outcome"]) ** 2)
+                lab = f"{'q_window' if a == name else a}-{b}"
+                r[lab], r[f"{lab}_ci"] = ((g[a] - y) ** 2 - (g[b] - y) ** 2).mean(), f"[{lo:.4f}, {hi:.4f}]"
+            r["mean_abs_q_window_minus_q_c"] = ((g[name] - g["q"]).abs() * 100).mean()
+            bri.append(r)
+    return pd.DataFrame(cov), pd.concat(enc, ignore_index=True), pd.DataFrame(bri)
 
 
 def chart(q: pd.DataFrame, dt: pd.DataFrame):
@@ -206,8 +258,9 @@ def main():
     days = option_q(quotes)
     keep = [c for c in days.columns if not c.startswith("dist_")]
     days[keep].to_csv(OUT / "days.csv", index=False)
-    q = attach_q(quotes, days)
-    q.drop(columns=[]).to_parquet(OUT / "quotes_with_q.parquet")
+    q_all = attach_q(quotes, days)
+    q_all.to_parquet(OUT / "quotes_with_q.parquet")                # every quote with an executable side
+    q = q_all[q_all["usable"]].copy()                               # analysis sample: two-sided, spread <= 10c
     ratio = days["basis_brti_today"].dropna()
     basis = pd.DataFrame({"BRTI / Deribit index - 1 (bp)": (ratio - 1) * 1e4}).describe(percentiles=[.05, .25, .5, .75, .95]).T
     status = days["status"].value_counts()
@@ -216,6 +269,9 @@ def main():
     for name, t in (("mid_minus_q", dt), ("calibration_mid_vs_q", cb), ("encompassing", en), ("brier", br)):
         t.to_csv(OUT / f"{name}.csv", index=False)
     chart(q, dt)
+    st_cov, st_enc, st_bri = staleness(q, days)
+    for name, t in (("staleness_coverage", st_cov), ("staleness_encompassing", st_enc), ("staleness_brier", st_bri)):
+        t.to_csv(OUT / f"{name}.csv", index=False)
     fmt = lambda t, idx=False: t.to_string(index=idx, float_format=lambda v: f"{v:.4f}")
     lines = [f"# Kalshi vs options, 08:00 UTC quotes on 17:00 NY daily markets (generated {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC)", "",
              f"Contracts {len(q)}, settlement days {q['day'].nunique()} ({q['settle'].min():%Y-%m-%d} to {q['settle'].max():%Y-%m-%d}); "
@@ -228,7 +284,12 @@ def main():
              "## b) Calibration on the same contracts: P(YES) = sigmoid(a + b logit(price))", "```", fmt(cb), "```",
              "## c) Encompassing: P(YES) = sigmoid(a + b1 logit(mid) + b2 logit(q)), SEs clustered by event", "```", fmt(en), "```",
              "## d) Brier: mid, q, q without basis adjustment, 50/50 blend; paired differences (negative = first is better)", "```",
-             fmt(br.T, True), "```"]
+             fmt(br.T, True), "```",
+             "## Staleness check: front smile from only the last 1 / 2 hours of trades before 08:00",
+             f"Gates loosened to {RECENT_GATES}; trades re-centred on the 08:00 forward. Same contracts compared.",
+             "```", fmt(st_cov), "```", "### Encompassing on the short-window days (options = short-window q, then the usual 8h q)",
+             "```", fmt(st_enc), "```", "### Brier on the short-window days (negative difference = first is better)",
+             "```", fmt(st_bri.T, True), "```"]
     (OUT / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
     log.info("Kalshi vs options done -> %s", OUT)
 

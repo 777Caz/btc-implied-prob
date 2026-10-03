@@ -178,18 +178,20 @@ def tau(model: VarianceModel, t0: pd.Timestamp, t1: pd.Timestamp, ev_by_day: dic
 
 
 # ── Smile fits from trades before 08:00 ─────────────────────────────────────────────────────
-def fit_expiry(origin, g, basis, idx_ref, constrain_m: bool = False):
+def fit_expiry(origin, g, basis, idx_ref, constrain_m: bool = False,
+               min_trades: int = MIN_TRADES, min_strikes: int = MIN_STRIKES, min_span_sd: float = MIN_SPAN_SD):
     """SVI fit of one expiry from pooled trades. constrain_m keeps the SVI centre m within
-    +/- M_SD_BOUND ATM standard deviations of k = 0 AND inside the traded log-moneyness range."""
+    +/- M_SD_BOUND ATM standard deviations of k = 0 AND inside the traded log-moneyness range.
+    The data gates default to phase 3's; looser ones are used for short trade windows."""
     T = (g["expiry"].iloc[0] - origin).total_seconds() / YEAR_S
     k = np.log(g["strike"] / (basis * g["index_price"]))
     per = pd.DataFrame({"strike": g["strike"], "k": k, "iv": g["iv"] / 100}).groupby("strike").agg(
         k=("k", "median"), iv=("iv", "median"), n=("iv", "size"))
-    if len(g) < MIN_TRADES or len(per) < MIN_STRIKES or not (per["k"].min() < 0 < per["k"].max()):
+    if len(g) < min_trades or len(per) < min_strikes or not (per["k"].min() < 0 < per["k"].max()):
         return None
     ks = per["k"].sort_values()
     atm_iv = float(np.interp(0, ks, per["iv"].reindex(ks.index)))
-    if (per["k"].max() - per["k"].min()) / (atm_iv * np.sqrt(T)) < MIN_SPAN_SD:
+    if (per["k"].max() - per["k"].min()) / (atm_iv * np.sqrt(T)) < min_span_sd:
         return None
     bounds = None
     if constrain_m:
