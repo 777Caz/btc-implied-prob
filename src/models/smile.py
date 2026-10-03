@@ -122,9 +122,11 @@ def prob_above_from_smile(p, k):
     return norm.cdf(d2) - norm.pdf(d2) * p.dw(k) / (2 * sw)
 
 
-def fit_svi(k, w, weights=None, arb_width: float = 6.0) -> tuple[SVI | None, float]:
+def fit_svi(k, w, weights=None, arb_width: float = 6.0, m_bounds: tuple[float, float] | None = None) -> tuple[SVI | None, float]:
     """Robust least-squares SVI fit, penalised towards no arbitrage over +/- `arb_width` ATM
     standard deviations: butterfly (g >= 0) and vertical spread (0 <= P(S_T > K) <= 1).
+    m_bounds optionally narrows the centre m (default [-1, 1]); used for short-dated smiles, whose few
+    strikes leave m poorly identified (see src/short_horizon.py).
     Returns (params, RMSE in total variance) or (None, inf)."""
     k, w = np.asarray(k, float), np.asarray(w, float)
     wt = np.ones_like(k) if weights is None else np.sqrt(np.asarray(weights, float))
@@ -133,6 +135,9 @@ def fit_svi(k, w, weights=None, arb_width: float = 6.0) -> tuple[SVI | None, flo
     lam = 10 * max(atm, 1e-6)      # penalty scale: an arbitrage of 0.01 outweighs typical misfit
     lo = [0.0, 1e-4, -0.999, -1.0, 1e-3]
     hi = [max(w.max(), 1e-3) * 2, 2.0, 0.999, 1.0, 2.0]
+    if m_bounds is not None:
+        lo[3], hi[3] = max(lo[3], m_bounds[0]), min(hi[3], m_bounds[1])
+    m0 = float(np.clip(0.0, lo[3], hi[3]))
 
     def resid(x):
         p = _svi_from_x(x)
@@ -146,7 +151,7 @@ def fit_svi(k, w, weights=None, arb_width: float = 6.0) -> tuple[SVI | None, flo
     best, best_cost = None, np.inf
     for rho0 in (-0.3, 0.0, 0.3):
         for s0 in (0.05, 0.2):
-            x0 = [min(max(atm * 0.9, 1e-5), hi[0] * 0.99), 0.1, rho0, 0.0, s0]
+            x0 = [min(max(atm * 0.9, 1e-5), hi[0] * 0.99), 0.1, rho0, m0, s0]
             try:
                 r = least_squares(resid, x0, bounds=(lo, hi), loss="soft_l1", f_scale=max(atm * 0.05, 1e-5))
             except ValueError:

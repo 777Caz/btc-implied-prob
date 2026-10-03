@@ -75,6 +75,8 @@ ALPHA_MIN_DAYS = 60
 TARGETS = {"noon NY": 12, "17:00 NY": 17}   # NY hour; outcome = close of the Binance 1-min candle opening then
 WEEK_RANGE = (5, 9)                       # days to expiry for the "1-week" smile
 GRID_SD, GRID_N = 16.0, 6001              # strike grid: +/- 16 ATM standard deviations
+CONSTRAIN_FRONT_M = True                  # SVI centre m of the front smile within +/- 1 ATM SD and the traded range
+M_SD_BOUND = 1.0
 LOG_FLOOR = -10.0                         # cap on the log score (~ a 5-sigma miss) so a few tail days can't dominate
 
 
@@ -176,7 +178,9 @@ def tau(model: VarianceModel, t0: pd.Timestamp, t1: pd.Timestamp, ev_by_day: dic
 
 
 # ── Smile fits from trades before 08:00 ─────────────────────────────────────────────────────
-def fit_expiry(origin, g, basis, idx_ref):
+def fit_expiry(origin, g, basis, idx_ref, constrain_m: bool = False):
+    """SVI fit of one expiry from pooled trades. constrain_m keeps the SVI centre m within
+    +/- M_SD_BOUND ATM standard deviations of k = 0 AND inside the traded log-moneyness range."""
     T = (g["expiry"].iloc[0] - origin).total_seconds() / YEAR_S
     k = np.log(g["strike"] / (basis * g["index_price"]))
     per = pd.DataFrame({"strike": g["strike"], "k": k, "iv": g["iv"] / 100}).groupby("strike").agg(
@@ -187,10 +191,15 @@ def fit_expiry(origin, g, basis, idx_ref):
     atm_iv = float(np.interp(0, ks, per["iv"].reindex(ks.index)))
     if (per["k"].max() - per["k"].min()) / (atm_iv * np.sqrt(T)) < MIN_SPAN_SD:
         return None
-    p, _ = sm.fit_svi(per["k"], per["iv"] ** 2 * T, per["n"])
+    bounds = None
+    if constrain_m:
+        sd = atm_iv * np.sqrt(T)
+        bounds = (max(per["k"].min(), -M_SD_BOUND * sd), min(per["k"].max(), M_SD_BOUND * sd))
+    p, _ = sm.fit_svi(per["k"], per["iv"] ** 2 * T, per["n"], m_bounds=bounds)
     if p is None:
         return None
-    return {"svi": p, "T": T, "F": basis * idx_ref, "per": per}
+    rmse = float(np.sqrt(np.average((np.sqrt(np.maximum(p.w(per["k"]), 0) / T) - per["iv"]) ** 2, weights=per["n"]))) * 100
+    return {"svi": p, "T": T, "F": basis * idx_ref, "per": per, "rmse_vol_pts": rmse}
 
 
 def fit_alpha(front, week) -> float:
@@ -223,13 +232,15 @@ def day_inputs(t: pd.DataFrame, origin: pd.Timestamp):
     front_exp = days[basis.notna()].idxmin() if basis.notna().any() else None
     if front_exp is None:
         return None
-    front = fit_expiry(origin, w[w["expiry"] == front_exp], basis[front_exp], idx_ref)
+    gf = w[w["expiry"] == front_exp]
+    front = fit_expiry(origin, gf, basis[front_exp], idx_ref, constrain_m=CONSTRAIN_FRONT_M)
+    front_free = fit_expiry(origin, gf, basis[front_exp], idx_ref, constrain_m=False) if CONSTRAIN_FRONT_M else front
     week = None
     wk = days[days.between(*WEEK_RANGE) & basis.notna()]
     if len(wk):
         e = (wk - 7).abs().idxmin()
         week = fit_expiry(origin, w[w["expiry"] == e], basis[e], idx_ref)
-    return {"front": front, "front_expiry": front_exp, "week": week, "idx_ref": idx_ref}
+    return {"front": front, "front_free": front_free, "front_expiry": front_exp, "week": week, "idx_ref": idx_ref}
 
 
 def forecast(front, front_exp, origin, s, lam, alpha, idx_ref, b0):
@@ -294,7 +305,9 @@ def run(months_only: list[str] | None = None):
                     "alpha_day_fit": a_fit, "alpha_used": a_used, "basis_binance": b0,
                     "event_types": ",".join(sorted({x for x, _ in ev_by_day.get(day, [])})),
                     **{f"svi_{k}": getattr(front["svi"], k) for k in ("a", "b", "rho", "m", "s")},
-                    "front_atm_w": float(front["svi"].w(0.0)),
+                    "front_atm_w": float(front["svi"].w(0.0)), "front_rmse_vol_pts": front["rmse_vol_pts"],
+                    "front_free_rmse_vol_pts": inp["front_free"]["rmse_vol_pts"] if inp["front_free"] else np.nan,
+                    "front_free_svi_m": inp["front_free"]["svi"].m if inp["front_free"] else np.nan,
                     "front_butterfly_min_g": float(sm.butterfly_g(front["svi"], np.linspace(-6, 6, 241) * np.sqrt(front["svi"].w(0.0))).min())}
             for tname, hour in TARGETS.items():
                 # settlement on the SAME calendar date as the 08:00 UTC origin, at `hour` New York time
@@ -429,6 +442,37 @@ def main():
         forecasts=("violation", "size"), violation_rate=("violation", "mean"),
         median_excess_if_violated=("calendar_max_excess", lambda c: c[c > 1e-6].median()))
     cal_diag.to_csv(OUT / "calendar_diagnostic.csv")
+    # before/after constraining the front smile's centre m (baseline saved from the unconstrained run)
+    base_dir = OUT / "baseline_unconstrained_m"
+    compare_lines = []
+    if CONSTRAIN_FRONT_M and base_dir.exists():
+        days = df.drop_duplicates("origin").dropna(subset=["front_rmse_vol_pts", "front_free_rmse_vol_pts"])
+        fit = pd.DataFrame({"unconstrained m": days["front_free_rmse_vol_pts"].describe(percentiles=[.5, .9]),
+                            "constrained m": days["front_rmse_vol_pts"].describe(percentiles=[.5, .9])}).loc[["count", "mean", "50%", "90%"]]
+        fit.loc["share of days with |m| > 1 SD (unconstrained)"] = [
+            float((days["front_free_svi_m"].abs() / np.sqrt(days["front_atm_w"]) > M_SD_BOUND).mean()), np.nan]
+        old_arb = pd.read_csv(base_dir / "arbitrage_checks.csv", index_col=0)
+        arb_cmp = pd.concat({"before": old_arb[["forecasts", "butterfly_violations", "calendar_violations", "worst_calendar"]],
+                             "after": arb[["forecasts", "butterfly_violations", "calendar_violations", "worst_calendar"]]}, axis=1)
+        keys = ["target", "variant"]
+        cols = ["days", "pit_var_ratio", "below_5%", "above_95%", "inside_25_75%", "median_logscore", "mean_logscore_capped", "logscore_vs_base"]
+        old_sc = pd.read_csv(base_dir / "scores_all_days.csv").set_index(keys)
+        new_sc = tables["all days"].set_index(keys)
+        sc_cmp = pd.concat({"before": old_sc[[c for c in cols if c in old_sc]], "after": new_sc[cols]}, axis=1)
+        old_f = pd.read_parquet(base_dir / "forecasts.parquet")
+        paired = (ok.set_index(["origin", "target", "variant"])["logscore"].clip(lower=LOG_FLOOR)
+                  - old_f[old_f["status"] == "ok"].dropna(subset=["variant"]).set_index(["origin", "target", "variant"])["logscore"].clip(lower=LOG_FLOOR)).dropna()
+        pchg = paired.groupby(level=["target", "variant"]).agg(["mean", "sem", "size"]).rename(
+            columns={"mean": "logscore_after_minus_before", "sem": "se", "size": "paired_days"})
+        for name, t in [("fit_error_vol_pts", fit), ("arbitrage_before_after", arb_cmp), ("scores_before_after", sc_cmp),
+                        ("logscore_change_paired", pchg)]:
+            t.to_csv(OUT / f"m_constraint_{name}.csv")
+        f0 = lambda t: t.to_string(float_format=lambda v: f"{v:.4f}")
+        compare_lines = ["## Constraining the front SVI centre m (|m| <= 1 ATM SD and within traded strikes): before vs after", "",
+                         "### Front fit error (trade-weighted RMSE, vol points), same days", "```", f0(fit), "```",
+                         "### Arbitrage checks", "```", f0(arb_cmp), "```",
+                         "### Scores, all days", "```", f0(sc_cmp), "```",
+                         "### Paired change in capped log score (after - before), same days", "```", f0(pchg), "```", ""]
     lam = ok[ok["variant"].isin(["clock, a=0.5", "vartime, a=0.5", "vartime+events, a=0.5"])].pivot_table(
         index="target", columns="variant", values="lambda", aggfunc="mean")
     alpha = ok.drop_duplicates("origin")[["alpha_day_fit", "alpha_used"]].describe()
@@ -451,7 +495,7 @@ def main():
              f"Front smiles that themselves have butterfly g < -1e-4: {front_bfly} of {df['origin'].nunique()} days.", "",
              "### Calendar violations by |SVI centre m| in front standard deviations (vartime, a=0.5)",
              "Excess is max(w_s - w1) relative to the front's ATM total variance.", "```", f(cal_diag, True), "```", "",
-             "## Event excess (full sample, descriptive; forecasts use earlier events only)", "```", f(ev), "```"]
+             "## Event excess (full sample, descriptive; forecasts use earlier events only)", "```", f(ev), "```", "", *compare_lines]
     (OUT / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
     log.info("Short horizon done -> %s", OUT)
 

@@ -1,0 +1,8 @@
+,before,before,before,before,after,after,after,after
+,forecasts,butterfly_violations,calendar_violations,worst_calendar,forecasts,butterfly_violations,calendar_violations,worst_calendar
+variant,,,,,,,,
+"clock, a=0.5",3858,168,228,6.55184675072135,3904,18,4,0.21638472024824057
+"vartime+events, a=0.5",3858,168,261,6.556238737230983,3904,18,4,0.21163389439450483
+"vartime+events, a=fitted",3692,75,179,6.556238737230983,3738,14,2,0.21163389439450483
+"vartime, a=0.5",3858,168,262,6.556238737230983,3904,18,4,0.21163389439450483
+"vartime, a=fitted",3692,75,180,6.556238737230983,3738,14,2,0.21163389439450483
