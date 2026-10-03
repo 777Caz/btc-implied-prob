@@ -1,188 +1,104 @@
-# BTC Deribit Options vs Prediction Markets
+# Bitcoin options vs Kalshi: is the prediction market efficient?
 
-How well do BTC options-implied probabilities predict what actually happens, and how do they
-compare with prediction-market prices (Polymarket, Kalshi) on the same events?
+## The question
 
-Deribit options prices contain the market's view of where BTC will be at each expiry. This project
-pulls those prices, turns them into probabilities (e.g. "P(BTC > $100k on Friday 08:00 UTC)"), and
-checks them against realised outcomes. Later it compares them with prediction-market prices
-(Polymarket, Kalshi) on the same events, to look for mispricing or arbitrage.
+Kalshi lists daily contracts that pay $1 if Bitcoin is above a strike at 17:00 New York time. The
+Deribit options market prices the same event, implicitly, through its volatility smile. Options
+prices are *risk-neutral* probabilities: they can include a risk premium, so they need not equal
+real-world odds. This project asks:
 
-**Phase 1 (data collection)** is done. **Phase 2 (DVOL-based lognormal forecasts and calibration
-tests vs a realised-vol baseline)** is in [reports/phase2/SUMMARY.md](reports/phase2/SUMMARY.md).
-Code: `src/models/`, `src/calibration.py`, `src/phase2.py` (`python -m src.phase2`).
-**Phase 3 (risk-neutral distributions from the full option smile: parity forwards, arbitrage-penalised
-SVI, Breeden-Litzenberger densities, total-variance interpolation)** is in
-[reports/phase3/SUMMARY.md](reports/phase3/SUMMARY.md). Code: `src/models/smile.py`, `src/forwards.py`,
-`src/clean_trades.py`, `src/phase3.py`, `src/phase3_hist.py`.
+> **Are prediction-market prices efficient once you account for the risk premium in options?**
 
-## Data sources (all free, public, no API key)
+We build an option-implied probability for every Kalshi strike, then test both against what
+actually happened, against each other, and in simple trading rules that pay real fees.
 
-| Source | What we take | Docs |
-|---|---|---|
-| Deribit | BTC index price, DVOL, historical option trades, live options chain | https://docs.deribit.com |
-| Polymarket | BTC price markets: questions, thresholds, prices | https://docs.polymarket.com |
-| Kalshi | BTC price markets: thresholds, prices | https://docs.kalshi.com |
+## The answer in five lines
 
-## Folder layout
+1. **The options get it right.** Their 1-day probability q = P(BTC > K at 17:00 NY), from the
+   08:00 UTC smile, is calibrated on Kalshi's strikes (logit slope 0.99 ± 0.04, 518 days).
+2. **Kalshi has a favourite-longshot bias in 2026.** Cheap contracts are too dear and favourites too
+   cheap (logit slope 1.18–1.36, 9 to 1 hours before settlement). It survives the 1¢ price-floor check; before 2026 it was mostly that floor.
+3. **Kalshi is flatter than the options by 2–4¢, but just as informative.** The Brier scores are
+   equal. With fresh option data the two carry similar information.
+4. **The gap can't be traded.**
+   - Taker rules don't beat fees and the spread in the 2026 holdout.
+   - Maker profits vanish once fills are simulated from Kalshi's trade history: orders fill
+     mainly when they are about to lose.
+5. **So Kalshi is efficient up to its costs.** The options' risk premium is too small at a 1-day
+   horizon to explain the bias. The bias coincides with more takers buying longshots in 2026, a
+   suggestive link but not a significant one.
 
-```
-btc-implied-prob/
-├── config.py            # dates, currency, paths, API URLs, logging setup: edit settings here
-├── requirements.txt
-├── src/
-│   ├── api.py             # shared HTTP GET with retries/pacing + Deribit JSON-RPC wrapper
-│   ├── storage.py         # save/load parquet helpers
-│   ├── deribit_prices.py  # step 2: BTC index price history (daily, hourly, 08:00 UTC)
-│   ├── deribit_dvol.py    # step 3: DVOL implied-vol index history
-│   ├── deribit_options.py # step 4: historical option trades
-│   ├── snapshot.py        # step 5: live snapshot of Deribit chain + Polymarket/Kalshi
-│   ├── resolutions.py     # daily: settlements, market outcomes, Binance 12:00 ET price
-│   ├── checks.py          # step 6: data-quality checks used by the notebook
-│   └── visuals.py         # progress charts → reports/figures/ (python -m src.visuals)
-├── deploy/crontab.txt   # the cron jobs (snapshot every 10 min, resolutions daily)
-├── data/
-│   ├── raw/             # data exactly as fetched (parquet)
-│   │   ├── option_trades/  # Deribit option trades, one file per month (YYYY-MM.parquet)
-│   │   ├── snapshots/   # one folder per day, two zstd parquet files per snapshot run
-│   │   └── resolutions/ # settlement prices + outcomes for everything the snapshots quoted
-│   └── processed/       # cleaned / merged data built from raw/
-├── notebooks/
-│   └── 01_data_checks.ipynb  # step 6: coverage, timezones, duplicates, bad values, BTC vs DVOL
-├── reports/figures/     # PNG charts of each step's data
-└── logs/pipeline.log    # log output from every script
-```
+Full write-up: [reports/REPORT.md](reports/REPORT.md). Dashboard: `reports/dashboard.html`.
 
-## Conventions
+![Kalshi vs options](reports/figures/report/fig4_kalshi_vs_options.png)
 
-- **Timestamps are always UTC**, stored as timezone-aware pandas datetimes (dtype `datetime64[..., UTC]`).
-- **Storage is parquet**. It keeps dtypes and is small and fast. Read it with `pd.read_parquet`.
-- **raw/ is never edited by hand.** Anything derived goes in processed/ so it can be rebuilt.
-- Deribit options expire at **08:00 UTC**, so that is the reference time for "outcome" prices.
+## Method
 
-## Live snapshots
-
-`python -m src.snapshot` saves the full Deribit BTC options chain plus Polymarket and Kalshi
-BTC price markets, all taken within ~2 seconds, to `data/raw/snapshots/YYYY-MM-DD/`.
-Free historical data can't give synchronised quotes across these venues, so they have to be
-recorded going forward. Each snapshot is ~100 KB (~15 MB/day at one every 10 minutes).
-
-`python -m src.resolutions` (daily) records what actually happened for everything the snapshots
-quoted, in `data/raw/resolutions/`:
-
-| File | Key | Joins to snapshot rows on |
-|---|---|---|
-| `deribit_delivery.parquet` | `expiry` (08:00 UTC) | Deribit snapshot `expiry` |
-| `predmarkets.parquet` | (`venue`, `market_id`) | prediction-market snapshot (`venue`, `market_id`) |
-| `binance_btcusdt_1m.parquet` | `candle_open` (UTC) | Polymarket snapshot `resolution_time` |
-
-`market_id` is Polymarket's Gamma market id or Kalshi's ticker: both are permanent ids, unlike
-question text. `outcome` is 1 if YES won, 0 if NO won, NaN if not final yet. The job only
-fetches what is missing or not yet final, so running it late or twice is harmless.
-
-### Scheduling on Windows (Task Scheduler)
-
-Windows has no cron; use Task Scheduler. From a **cmd** prompt (replace the path with the project's):
-
-```bat
-schtasks /Create /TN "btc-snapshot" /SC MINUTE /MO 10 /TR "cmd /c cd /d C:\path\to\btc-implied-prob && .venv\Scripts\python -m src.snapshot >> logs\cron_snapshot.log 2>&1"
-schtasks /Create /TN "btc-resolutions" /SC DAILY /ST 23:30 /TR "cmd /c cd /d C:\path\to\btc-implied-prob && .venv\Scripts\python -m src.resolutions >> logs\cron_resolutions.log 2>&1"
+```mermaid
+flowchart LR
+    subgraph Options["Deribit options (2021-2026)"]
+        T[Option trades<br/>00:00-08:00 UTC] --> F[Forward from<br/>put-call parity]
+        F --> S[SVI smile, arbitrage-<br/>penalised, centre m bounded]
+        S --> V[Scale to 17:00 NY:<br/>variance time + macro events]
+        V --> Q["q = P(S > K)<br/>Breeden-Litzenberger"]
+    end
+    subgraph Kalshi["Kalshi (2024-2026)"]
+        K[1-minute bid/ask<br/>every strike] --> M[Kalshi mid<br/>at 08:00 UTC]
+        TR[Trade history<br/>with taker side] --> MK[Markouts and<br/>fill simulation]
+    end
+    Q --> C{Compare against<br/>BRTI settlement}
+    M --> C
+    C --> R1[Calibration<br/>and encompassing]
+    C --> R2[Gap trade tests<br/>taker / maker]
+    MK --> R2
+    C --> R3[Bias over time vs<br/>spreads and order flow]
 ```
 
-Check with `schtasks /Query /TN btc-snapshot`, remove with `schtasks /Delete /TN btc-snapshot /F`.
-Like cron on a laptop, tasks don't run while the PC sleeps. In the Task Scheduler app you can tick
-"Wake the computer to run this task" and "Run whether user is logged on or not" for fewer gaps.
+**Checks built in:**
+- Every forecast uses only data before 08:00 UTC.
+- 2026 is a holdout: rules and thresholds were fixed on earlier data.
+- Standard errors are clustered by settlement day, since all strikes on a day share one outcome.
 
-### Scheduling on a Mac (cron)
+## How to run
 
-The cron jobs are in [deploy/crontab.txt](deploy/crontab.txt) (install with `crontab deploy/crontab.txt`,
-check with `crontab -l`, remove with `crontab -r`). Edit the path inside first if the project lives
-elsewhere. Times are local time. cron doesn't run while the Mac sleeps, so expect gaps. Output goes
-to `logs/cron_*.log`. (History: this ran on the original Mac from 2026-09-30 until it was switched
-off on 2026-10-02, when collection moved to a Windows PC.)
+Python 3.11+. The code is in git; the data (about 2.3 GB) travels separately as a zip that unzips to `data/`.
 
-Run only **one** collector at a time (Mac, PC or VPS). Two would write two separate sets of
-snapshots that you'd have to merge.
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt     # Mac/Linux: .venv/bin/python
+```
 
-### Moving to a small Linux VPS
-
-Any always-on box works (e.g. a $4–6/month 1 vCPU / 1 GB VPS; Ubuntu 24.04 assumed). Data
-grows ~15 MB/day, so the smallest disk is plenty for years.
-
-1. **Set up the server** (as your user, not root):
-   ```bash
-   sudo apt update && sudo apt install -y python3-venv git rsync
-   sudo timedatectl set-timezone UTC          # keep the server in UTC; avoids DST surprises
-   git clone <your repo url> ~/btc-implied-prob   # or: rsync the project up from the Mac (step 4)
-   cd ~/btc-implied-prob && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-   .venv/bin/python -m src.snapshot            # test once; check data/raw/snapshots/
-   ```
-2. **Install cron** (`crontab -e`), with the path changed and the daily job in UTC:
-   ```
-   */10 * * * * cd $HOME/btc-implied-prob && .venv/bin/python -m src.snapshot >> logs/cron_snapshot.log 2>&1
-   30 22 * * *  cd $HOME/btc-implied-prob && .venv/bin/python -m src.resolutions >> logs/cron_resolutions.log 2>&1
-   ```
-   Then remove the Mac's jobs (`crontab -r` on the Mac) so the two don't both write snapshots.
-3. **Check it's running**: `tail logs/cron_snapshot.log` and `ls data/raw/snapshots/$(date -u +%F)/`.
-4. **Copy data back to the Mac** whenever you want to analyse (only new files are transferred):
-   ```bash
-   rsync -avz user@your-vps:btc-implied-prob/data/raw/snapshots/   data/raw/snapshots/
-   rsync -avz user@your-vps:btc-implied-prob/data/raw/resolutions/ data/raw/resolutions/
-   ```
-   Snapshot files never collide (one file per timestamp), so Mac-era and VPS-era snapshots sit
-   side by side. For resolutions, let the VPS copy overwrite the Mac's: the job rebuilds
-   everything from the snapshots it can see, so run it once on the VPS after copying the Mac's
-   snapshots up (`rsync -avz data/raw/snapshots/ user@your-vps:btc-implied-prob/data/raw/snapshots/`).
-
-Notes: the Binance market-data host (`data-api.binance.vision`) is used because `api.binance.com`
-is blocked from some regions (notably US IPs); pick a VPS region where both work, and test with
-`curl "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1"`.
-
-The three venues settle on **different reference prices and times**:
-
-| Venue | Settles on | Time |
+| Step | Command | Output |
 |---|---|---|
-| Deribit | Deribit BTC index, 30-min TWAP | 08:00 UTC |
-| Polymarket | Binance BTC/USDT 1-minute close | 12:00 ET (16:00 UTC in summer, 17:00 UTC in winter) |
-| Kalshi | CF Benchmarks BRTI, 60-second average | 12:00 or 17:00 ET |
+| Option trades, prices, DVOL | `python -m src.deribit_options 2021-01-01 <month>`, `src.deribit_prices`, `src.deribit_dvol` | `data/raw/` |
+| Binance 1-minute history | `python -m src.binance_bulk` | `data/raw/binance_1m/` |
+| Kalshi / Polymarket history | `python -m src.pm_backfill`, `python -m src.pm_kalshi_trades` | `data/raw/pm_history/` |
+| 30-day option forecasts | `python -m src.phase2`, `python -m src.phase3` | `reports/phase2/`, `reports/phase3/` |
+| 1-day option forecasts | `python -m src.intraday_vol`, `python -m src.short_horizon` | `reports/short_horizon/` |
+| Kalshi calibration and robustness | `python -m src.pm_kalshi_calib`, `python -m src.pm_kalshi_robust` | `reports/pm/` |
+| Kalshi vs options, trade tests | `python -m src.pm_kalshi_options`, `src.pm_kalshi_gap_trade`, `src.pm_kalshi_markout` | `reports/pm/` |
+| Bias over time | `python -m src.pm_kalshi_bias_time` | `reports/pm/kalshi_bias_time/` |
+| Report figures, dashboard | `python -m src.report_figures`, `python -m src.dashboard` | `reports/figures/report/`, `reports/dashboard.html` |
+| Live collection | `python -m src.snapshot` (every 10 min), `src.resolutions` (daily), `src.paper_trade` (08:07 UTC) | `data/raw/snapshots/`, `data/processed/paper_trades/` |
 
-## Known data limitations
+Run every module from the project root. Scheduling, data layout, conventions and known data
+limitations are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-- **No forward price in the trade data.** Historical option trades carry `index_price` (spot)
-  but not the forward/futures price for each expiry. Implied probabilities have to be computed
-  against the forward, so a later phase will need to **back it out from put-call parity**
-  (C − P = e^(−rT)·(F − K) across strikes of the same expiry), using calls and puts traded close
-  together in time. The live snapshots (step 5) record Deribit's `underlying_price` directly,
-  which can be used to check that estimate.
-- **Option prices are in BTC.** Deribit BTC options are inverse (quoted and settled in BTC);
-  `price_usd = price × index_price`.
-- **Trade history comes from `history.deribit.com`**, which serves the full public archive but is
-  not in Deribit's current API docs. `www.deribit.com` only keeps the last 24 hours of trades.
+## Where things are
 
-## Setup
+| | |
+|---|---|
+| [reports/REPORT.md](reports/REPORT.md) | the write-up, with figures |
+| [reports/pm/](reports/pm/) | Kalshi results: calibration, robustness, vs options, trade tests, markouts, bias over time |
+| [reports/short_horizon/](reports/short_horizon/) | validation of the 1-day option forecasts |
+| [reports/phase2/](reports/phase2/SUMMARY.md), [reports/phase3/](reports/phase3/SUMMARY.md) | 30-day forecasts: DVOL, full smile, robustness |
+| [reports/phase_c/PLAN.md](reports/phase_c/PLAN.md) | next step: risk-neutral to real-world kernel |
+| [PROJECT_BRIEF.md](PROJECT_BRIEF.md) | the longer working brief and roadmap |
 
-The code is in git; the **data is not** (`data/` is ~1.1 GB, mostly option trades that took ~47 h
-to download). It travels separately as a zip, `btc-implied-prob-data.zip`, that unzips to `data/`.
+## Data sources
 
-1. Clone the repo, then unzip the data zip **into the project folder** so `data/` sits next to `src/`.
-2. Create the Python environment (Python 3.11+):
-
-   **Windows** (PowerShell or cmd):
-   ```bat
-   py -m venv .venv
-   .venv\Scripts\python -m pip install -r requirements.txt
-   ```
-   **Mac / Linux**:
-   ```bash
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -r requirements.txt
-   ```
-3. Check it works: `python -m src.snapshot` (with the venv's python) should save two files in
-   `data/raw/snapshots/<today>/`.
-
-Every script runs as a module from the project root, e.g. `python -m src.phase2`. Paths are built
-from the project folder (`config.py`), so the project can live anywhere.
-
-Without the data zip, everything can be rebuilt from the APIs: `src.deribit_prices`,
-`src.deribit_dvol`, `src.deribit_options 2021-01-01 <next month>` (the slow one), and
-`src.resolutions`. Past live snapshots can't be rebuilt; they only exist in the zip.
+All free and public, with no API key: [Deribit](https://docs.deribit.com) (options, index, DVOL),
+[Kalshi](https://docs.kalshi.com) (markets, candles, trades),
+[Polymarket](https://docs.polymarket.com), [Binance](https://data.binance.vision) (1-minute
+BTC/USDT), plus [BLS](https://www.bls.gov) and the [Federal Reserve](https://www.federalreserve.gov)
+for macro release times.
