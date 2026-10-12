@@ -1,0 +1,3 @@
+# Generated outputs: keep them out of GitHub's language stats and collapse them in diffs
+reports/** linguist-generated
+*.ipynb linguist-documentation

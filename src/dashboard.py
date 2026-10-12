@@ -12,8 +12,9 @@ Tabs: Findings (report figures), Live (1, 2 and 4 below), Kalshi (3 + analysis f
   4. Paper-trading log: signals, fills, P&L (no orders are ever sent).
 Run:  python -m src.dashboard   (rebuild after the 08:07 paper-trading run for today's panels)
 PDF (every tab in order, A4):  open dashboard.html#print and print, or headless Edge:
-  msedge --headless=new --no-pdf-header-footer --virtual-time-budget=30000
+  msedge --headless=new --no-pdf-header-footer --virtual-time-budget=30000 --user-data-dir=<empty temp dir>
          --print-to-pdf=reports/dashboard.pdf file:///<project>/reports/dashboard.html#print
+  (the separate profile stops an already-running Edge from taking the job and writing nothing)
 """
 import base64
 import glob
@@ -244,7 +245,7 @@ body.printall .tab { display:block; } body.printall .tabs { display:none; } body
   .tab + .tab { break-before: page; }
   figure, .card, .tile, ol.answer { break-inside: avoid; }
   .gallery { grid-template-columns: 1fr; } .grid { grid-template-columns: 1fr 1fr; }
-  figure img { cursor:default; } .tablewrap { overflow:visible; }
+  figure img { cursor:default; width:auto; max-width:100%; max-height:235mm; margin:0 auto; } .tablewrap { overflow:visible; }
 }
 #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; flex-direction:column; align-items:center; justify-content:center;
   padding:16px; z-index:10; cursor:zoom-out; } #lightbox[hidden] { display:none; }

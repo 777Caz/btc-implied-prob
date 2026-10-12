@@ -36,7 +36,7 @@ from src.api import deribit
 from src.clean_trades import COLUMNS, clean
 from src.forwards import forward_by_expiry
 from src.models import smile as sm
-from src.phase3_hist import WINDOW, basis_by_expiry, month_tasks
+from src.phase3_hist import basis_by_expiry, month_tasks
 
 log = logging.getLogger(__name__)
 OUT = config.PHASE3_DIR / "robustness"

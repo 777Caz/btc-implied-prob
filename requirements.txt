@@ -11,3 +11,4 @@ jupyter==1.1.1           # notebooks
 nbconvert==7.17.1        # run notebooks headless
 matplotlib==3.11.2
 scipy==1.18.1            # distributions, SVI optimiser, KS test
+markdown-it-py==4.2.0    # REPORT.md -> REPORT.pdf (src.report_pdf)

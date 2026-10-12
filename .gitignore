@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 
-# Data: ~1.1 GB, transferred separately as btc-implied-prob-data.zip (see README "Setup")
+# Data: ~2.3 GB, rebuilt from public APIs (see docs/OPERATIONS.md "Setup")
 data/
 
 # Run logs and process files

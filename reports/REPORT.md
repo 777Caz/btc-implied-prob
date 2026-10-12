@@ -1,7 +1,7 @@
 # Bitcoin options vs Kalshi: are prediction markets efficient once you account for the options' risk premium?
 
-*Draft, 2026-10-03. Numbers are from the scripts named in each section; figures from
-`python -m src.report_figures`.*
+*Written 2026-10-03. Numbers are from the scripts named in each section; figures from
+`python -m src.report_figures`. PDF version: [REPORT.pdf](REPORT.pdf).*
 
 ## 1. Question
 
@@ -367,7 +367,7 @@ spread explanation predicts.
 - **Roadmap C: from q to real-world p.** An exponential-quadratic pricing kernel,
   p(x) ∝ q(x) · exp(γx + δx²), fitted by rolling maximum likelihood on the 1-day distributions.
   The δ-only (variance premium) model is primary, with a GARCH-t benchmark, 2021–2026 Binance
-  history and a 2026 holdout. Plan in [phase_c/PLAN.md](phase_c/PLAN.md).
+  history and a 2026 holdout. Plan in [docs/ROADMAP_PRICING_KERNEL.md](../docs/ROADMAP_PRICING_KERNEL.md).
 - **Lead-lag.** Within the day, does Kalshi or the options market move first after a BTC move?
 - **Hourly markets.** Kalshi's 12:00 NY series is hourly; at a 1-hour horizon the price floor
   and order flow may matter more.

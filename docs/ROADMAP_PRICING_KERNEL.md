@@ -223,7 +223,7 @@ All are out of sample, on the same days and targets, refitted on the same rollin
    - stability tests and charts: rolling (γ', δ'), PIT histograms, implied kernel M(u)
    - results to `reports/phase_c/`
 5. **Kalshi re-run:** run the Kalshi encompassing regression with p.
-6. **Write-up:** update SUMMARY.md and PROJECT_BRIEF.md.
+6. **Write-up:** update reports/REPORT.md and the README.
 
 ## 9. Decisions needed before starting
 

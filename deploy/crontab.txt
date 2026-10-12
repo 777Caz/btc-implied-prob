@@ -1,6 +1,6 @@
 # btc-implied-prob: Mac/Linux only (cron). On Windows use deploy/register_tasks.ps1 instead.
 # Times are the machine's local time; edit the path to wherever the project lives.
 # Live snapshot of Deribit chain + Polymarket/Kalshi BTC markets, every 10 minutes
-*/10 * * * * cd /Users/caro/Projects/btc-implied-prob && .venv/bin/python -m src.snapshot >> logs/cron_snapshot.log 2>&1
+*/10 * * * * cd /path/to/btc-implied-prob && .venv/bin/python -m src.snapshot >> logs/cron_snapshot.log 2>&1
 # Resolutions (settlements/outcomes/Binance noon ET), daily at 23:30; idempotent, catches up if missed
-30 23 * * * cd /Users/caro/Projects/btc-implied-prob && .venv/bin/python -m src.resolutions >> logs/cron_resolutions.log 2>&1
+30 23 * * * cd /path/to/btc-implied-prob && .venv/bin/python -m src.resolutions >> logs/cron_resolutions.log 2>&1

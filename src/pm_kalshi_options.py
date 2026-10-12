@@ -20,7 +20,6 @@ Outputs (reports/pm/kalshi_vs_options/):
   d) Brier of mid, q and the 50/50 blend, with paired differences
 Run:  python -m src.pm_kalshi_options
 """
-import glob
 import logging
 
 import matplotlib

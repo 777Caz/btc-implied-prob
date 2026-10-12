@@ -1,7 +1,6 @@
 # Operations: data collection, layout and setup
 
-Moved from the README so that the README can stay short. Everything here is about running and
-maintaining the pipeline; the research is in [reports/REPORT.md](../reports/REPORT.md).
+Everything here is about running and maintaining the pipeline; the research is in [reports/REPORT.md](../reports/REPORT.md).
 
 ## Data sources (all free, public, no API key)
 
@@ -33,7 +32,9 @@ btc-implied-prob/
 │   ├── pm_backfill.py, pm_kalshi_*.py                        # prediction-market history and tests
 │   ├── paper_trade.py     # daily Kalshi gap-rule paper-trading log (no orders)
 │   ├── report_figures.py  # the figures of reports/REPORT.md
+│   ├── report_pdf.py      # reports/REPORT.md -> reports/REPORT.pdf
 │   └── dashboard.py       # reports/dashboard.html (static Plotly page)
+├── docs/                # this file, and the plan for the pricing-kernel step
 ├── deploy/              # register_tasks.ps1 + run_task.py (Windows), crontab.txt (Mac/Linux)
 ├── reference/us_macro_events.csv   # CPI / NFP / FOMC release times (bls.gov, federalreserve.gov)
 ├── data/
@@ -44,7 +45,8 @@ btc-implied-prob/
 │   └── processed/       # cleaned / merged data built from raw/
 ├── notebooks/
 │   └── 01_data_checks.ipynb  # step 6: coverage, timezones, duplicates, bad values, BTC vs DVOL
-├── reports/figures/     # PNG charts of each step's data
+├── reports/             # REPORT.md/.pdf, dashboard, and one results folder per analysis (RESULTS.md + CSVs)
+│   └── figures/         # data charts; figures/report/ holds the figures of REPORT.md
 └── logs/pipeline.log    # log output from every script
 ```
 
@@ -97,8 +99,7 @@ resolutions log report any gap of 30 minutes or more.
 The cron jobs are in [deploy/crontab.txt](../deploy/crontab.txt) (install with `crontab deploy/crontab.txt`,
 check with `crontab -l`, remove with `crontab -r`). Edit the path inside first if the project lives
 elsewhere. Times are local time. cron doesn't run while the Mac sleeps, so expect gaps. Output goes
-to `logs/cron_*.log`. (History: this ran on the original Mac from 2026-09-30 until it was switched
-off on 2026-10-02, when collection moved to a Windows PC.)
+to `logs/cron_*.log`.
 
 Run only **one** collector at a time (Mac, PC or VPS). Two would write two separate sets of
 snapshots that you'd have to merge.
@@ -148,11 +149,9 @@ The three venues settle on **different reference prices and times**:
 ## Known data limitations
 
 - **No forward price in the trade data.** Historical option trades carry `index_price` (spot)
-  but not the forward/futures price for each expiry. Implied probabilities have to be computed
-  against the forward, so a later phase will need to **back it out from put-call parity**
-  (C − P = e^(−rT)·(F − K) across strikes of the same expiry), using calls and puts traded close
-  together in time. The live snapshots (step 5) record Deribit's `underlying_price` directly,
-  which can be used to check that estimate.
+  but not the forward/futures price for each expiry. `src/forwards.py` backs it out from put-call
+  parity on calls and puts traded close together; it is checked against Deribit's own forwards in
+  the live snapshots and against futures in `reports/phase3/robustness/`.
 - **Option prices are in BTC.** Deribit BTC options are inverse (quoted and settled in BTC);
   `price_usd = price × index_price`.
 - **Trade history comes from `history.deribit.com`**, which serves the full public archive but is
@@ -160,11 +159,10 @@ The three venues settle on **different reference prices and times**:
 
 ## Setup
 
-The code is in git; the **data is not** (`data/` is ~1.1 GB, mostly option trades that took ~47 h
-to download). It travels separately as a zip, `btc-implied-prob-data.zip`, that unzips to `data/`.
+The code is in git; the **data is not** (`data/` is about 2.3 GB, mostly option trades, whose full
+download takes about 47 hours).
 
-1. Clone the repo, then unzip the data zip **into the project folder** so `data/` sits next to `src/`.
-2. Create the Python environment (Python 3.11+):
+1. Create the Python environment (Python 3.11+):
 
    **Windows** (PowerShell or cmd):
    ```bat
@@ -176,12 +174,12 @@ to download). It travels separately as a zip, `btc-implied-prob-data.zip`, that 
    python3 -m venv .venv
    .venv/bin/python -m pip install -r requirements.txt
    ```
-3. Check it works: `python -m src.snapshot` (with the venv's python) should save two files in
+2. Check it works: `python -m src.snapshot` (with the venv's python) should save two files in
    `data/raw/snapshots/<today>/`.
+3. Rebuild the history from the APIs: `src.deribit_prices`, `src.deribit_dvol`,
+   `src.deribit_options 2021-01-01 <next month>` (the slow one), `src.binance_bulk`,
+   `src.pm_backfill`, `src.pm_kalshi_trades` and `src.resolutions`. Past live snapshots can't be
+   rebuilt: they exist only where they were recorded.
 
 Every script runs as a module from the project root, e.g. `python -m src.phase2`. Paths are built
 from the project folder (`config.py`), so the project can live anywhere.
-
-Without the data zip, everything can be rebuilt from the APIs: `src.deribit_prices`,
-`src.deribit_dvol`, `src.deribit_options 2021-01-01 <next month>` (the slow one), and
-`src.resolutions`. Past live snapshots can't be rebuilt; they only exist in the zip.

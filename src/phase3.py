@@ -21,12 +21,10 @@ import numpy as np
 import pandas as pd
 
 import config
-from src import calibration as cal
 from src import visuals
 from src.api import deribit
 from src.clean_trades import COLUMNS, clean, clean_all_months
 from src.forwards import forward_by_expiry
-from src.models import dvol_lognormal as lm
 from src.models import smile as sm
 
 log = logging.getLogger(__name__)
