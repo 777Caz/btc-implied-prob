@@ -14,7 +14,7 @@ Those option probabilities are **risk-neutral** (q). They are the probabilities 
 prices fair, and can differ from real-world odds (p) by a risk premium: for example, if
 investors pay up for crash insurance.
 
-**Our question:** is Kalshi's price an efficient forecast once that premium is accounted for? We
+**The question:** is Kalshi's price an efficient forecast once that premium is accounted for? I
 answer it in four steps:
 1. Build the option-implied q for every Kalshi strike, using only information available at
    08:00 UTC.
@@ -38,7 +38,7 @@ before the close.
 - **Basis.** At settlement the BRTI and Deribit's index differ by a median of +0.1 bp (SD 5 bp),
   so the basis between them is immaterial.
 - **The 12:00 NY series is excluded.** Those markets open at 11:00, so they're hourly markets with
-  no usable quote at our horizons.
+  no usable quote at the horizons used here.
 - **Kalshi data cleaning.**
   - A quote is *usable* only if it is two-sided with a spread of at most 10¢.
   - Before 2026, 40% of 08:00 books were 1¢/99¢ placeholders, whose midpoint carries no
@@ -52,8 +52,8 @@ standard errors are clustered by day.
 
 ### 3.1 From trades to a smile
 
-- **Trades.** For each day we pool Deribit option trades from 00:00 to 08:00 UTC, after
-  cleaning. We drop zero or absurd implied vols, combo legs and options within a day of expiry:
+- **Trades.** For each day I pool Deribit option trades from 00:00 to 08:00 UTC, after
+  cleaning. I drop zero or absurd implied vols, combo legs and options within a day of expiry:
   23% of trades on a typical day.
 - **Forward.** Deribit options are *inverse*, quoted in BTC. The forward F comes from put-call
   parity on calls and puts traded close together: F = K / (1 − (c − p)), with c and p in BTC.
@@ -82,7 +82,7 @@ standard errors are clustered by day.
 (Breeden-Litzenberger), give the density of S at the front expiry; q(K) = −∂C/∂K.
 
 **Scaling to 17:00 New York.** The front expiry is 08:00 UTC the next day, but Kalshi settles at
-17:00 NY, 9–14 hours earlier. We scale the smile in total variance:
+17:00 NY, 9–14 hours earlier. I scale the smile in total variance:
 
     w_s(k) = λ · w₁(k / λ^α),     λ = τ(08:00 → 17:00 NY) / τ(08:00 → expiry)
 
@@ -111,7 +111,7 @@ standard errors are clustered by day.
 
 ### 3.3 Validation
 
-We forecast the Binance price at noon and 17:00 NY on 1,869 days (2021-06 to 2026-08) and score
+I forecast the Binance price at noon and 17:00 NY on 1,869 days (2021-06 to 2026-08) and score
 the full distributions.
 
 - **Variance time beats clock time.** The log score improves by 0.010 ± 0.003 at noon and
@@ -139,8 +139,8 @@ the full distributions.
 
 ## 4. Is Kalshi calibrated?
 
-For each 17:00 NY market we take the usable mid at four quote times: 24h, 8h and 1h before
-settlement, and 08:00 UTC (9 hours before, aligned with the options). We fit
+For each 17:00 NY market I take the usable mid at four quote times: 24h, 8h and 1h before
+settlement, and 08:00 UTC (9 hours before, aligned with the options). I fit
 
     P(YES) = sigmoid(a + b · logit(mid))
 
@@ -160,7 +160,7 @@ with standard errors clustered by event, estimated before 2026 and on 2026 as a 
 
 **The price floor.** Kalshi prices sit on a 1¢ grid, so a contract whose true probability is 0.2%
 still shows a mid of about 1.5¢. Logit(mid) is mismeasured near 0 and 1, and that alone can push
-b above 1. We check two ways (Figure 3b):
+b above 1. I check two ways (Figure 3b):
 - **Trimming prices:** refit without mids below 5¢ or above 95¢, and below 10¢ or above 90¢.
 - **Selecting by distance from the money:** z = ln(S/K) / (σ√τ), so the selection doesn't depend
   on the quote itself.
@@ -183,7 +183,7 @@ about 2%. Elsewhere the change is within ±0.0002.
 
 ## 5. Kalshi vs the options
 
-At 08:00 UTC we compute q for every quoted strike (8,574 contracts on 518 days, 2024-07 to 2026-09).
+At 08:00 UTC I compute q for every quoted strike (8,574 contracts on 518 days, 2024-07 to 2026-09).
 
 **a) The gap.** The Kalshi mid and q are 0.99 correlated, and the average gap is 0.0¢. But it is
 systematic by price (Figure 4a):
@@ -211,7 +211,7 @@ If one price contains all the useful information, the other's coefficient is zer
 - **Before 2026:** the weights split roughly evenly (0.46 / 0.54).
 
 **Staleness check.** The options are handicapped: the smile pools eight hours of trades, while the
-Kalshi quote is live. So we rebuilt q from only the **last one or two hours** of trades, with the
+Kalshi quote is live. So I rebuilt q from only the **last one or two hours** of trades, with the
 data gates loosened and every trade re-centred on the 08:00 forward.
 - **Coverage and fit:** this works on 752 and 756 of 756 days, with a median of 106 trades in the
   last hour. The fit is better: 1.34 vs 1.60 vol points.
@@ -240,7 +240,7 @@ options would carry the information. None of that holds:
 
 ### 6.1 Taker rules
 
-At 08:00 UTC we buy only when the option fair value beats Kalshi's executable price by more than
+At 08:00 UTC I buy only when the option fair value beats Kalshi's executable price by more than
 the fee plus a threshold T. T is fixed in advance at 2, 3 and 5¢; nothing is tuned on 2026.
 - **Buy YES** at the ask if q − ask − fee > T.
 - **Buy NO** at 1 − bid if (1 − q) − (1 − bid) − fee > T.
@@ -263,8 +263,8 @@ the fee plus a threshold T. T is fixed in advance at 2, 3 and 5¢; nothing is tu
 Kalshi charges no maker fee on these series. If every order filled at its price, this would earn
 +3.9 to +5.1¢ per signal in 2026 (significant).
 
-**The realistic version.** Using Kalshi's trade history, we fill an order only if a later taker
-trade went **through** our price before the close, which fills even an order at the back of the
+**The realistic version.** Using Kalshi's trade history, I fill an order only if a later taker
+trade went **through** the order's price before the close, which fills even an order at the back of the
 queue. Unfilled orders earn nothing.
 - **Fill rate:** about 75% in 2026.
 - **The edge disappears:** +0.6, +0.3 and −0.3¢ per signal for T = 2, 3 and 5¢, all
@@ -323,7 +323,7 @@ spread explanation predicts.
 
 **Market makers.**
 - Susquehanna (SIG) became Kalshi's first institutional market maker on 3 April 2024, before
-  our sample.
+  the sample.
 - Wintermute confirmed on 29 May 2026 that it quotes Kalshi event contracts; nothing changes
   visibly around that date.
 - Kalshi lists one designated liquidity provider for crypto hourly and daily markets but
@@ -351,11 +351,11 @@ spread explanation predicts.
   - "through" ignores the queue, which is conservative;
   - only one size (100 contracts);
   - trade history covers every third day.
-- **Fees and incentives.** We use Kalshi's quadratic taker fee and zero maker fee. Kalshi's
+- **Fees and incentives.** I use Kalshi's quadratic taker fee and zero maker fee. Kalshi's
   Volume Incentive Program (paying for volume, March 2023 to October 2026) and its
-  liquidity-provider payments are ignored. They could make market making profitable where our
+  liquidity-provider payments are ignored. They could make market making profitable where these
   numbers say it isn't.
-- **Many tests.** We report every cell, and a single z ≈ 2 among them should not be over-read.
+- **Many tests.** I report every cell, and a single z ≈ 2 among them should not be over-read.
 - **Real-world p is not estimated yet.** "The options are calibrated" is a statement about q on
   this sample. The risk-neutral to real-world adjustment is roadmap C.
 

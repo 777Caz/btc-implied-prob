@@ -15,17 +15,21 @@ real-world odds. This project asks:
 
 > **Are prediction-market prices efficient once you account for the risk premium in options?**
 
-We build an option-implied probability for every Kalshi strike, then test both against what
+I build an option-implied probability for every Kalshi strike, then test both against what
 actually happened, against each other, and in simple trading rules that pay real fees.
 
 ## The answer in five lines
+
+**Kalshi's 2026 favourite-longshot bias is real, but a maker strategy that earns +3.9 to +5.1¢ per
+signal on paper vanishes once fills are simulated from Kalshi's trade history (2.5M trades): the
+orders that never fill are disproportionately the winners.**
 
 1. **The options get it right.** Their 1-day probability q = P(BTC > K at 17:00 NY), from the
    08:00 UTC smile, is calibrated on Kalshi's strikes (logit slope 0.99 ± 0.04, 518 days).
 2. **Kalshi has a favourite-longshot bias in 2026.** Cheap contracts are too dear and favourites too
    cheap (logit slope 1.18–1.36, 9 to 1 hours before settlement). It survives the 1¢ price-floor
    check; before 2026 it was mostly that floor.
-3. **Kalshi is flatter than the options by 2–4¢, but just as informative.** The Brier scores are
+3. **Kalshi is flatter than the options by 1–4¢, but just as informative.** The Brier scores are
    equal. With fresh option data the two carry similar information.
 4. **The gap can't be traded.**
    - Taker rules don't beat fees and the spread in the 2026 holdout.
@@ -36,6 +40,17 @@ actually happened, against each other, and in simple trading rules that pay real
    suggestive link but not a significant one.
 
 ![Kalshi vs options](reports/figures/report/fig4_kalshi_vs_options.png)
+
+## Not tested
+
+- **Liquidity incentives.** Kalshi's Volume Incentive Program and liquidity-provider payments are
+  left out. They could make market making profitable where these results say it isn't.
+- **A hedged second leg.** Buying the Kalshi contract and hedging it with a Deribit call spread
+  (the risk-neutral arbitrage) is not tested. The two venues settle on different indices and
+  times, so the hedge carries basis risk.
+- **Queue position and order management.** Simulated orders fill when a later trade goes through
+  their price, whatever their place in the queue. They rest at the 08:00 price all day, with no
+  cancelling or repricing, at one size (100 contracts).
 
 ## Method
 
